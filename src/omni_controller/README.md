@@ -25,6 +25,8 @@ It:
 | `sim` | `bool` | `false` | Simulation mode (velocity-only command interfaces) |
 | `pub_odom` | `bool` | `false` | Publish wheel odometry |
 | `pub_performance` | `bool` | `true` | Publish performance indexes |
+| `transition_wheels.mode` | `string` | `"lock"` | Wheel behaviour during STAND/REST transitions. `"lock"`: wheels braked (velocity 0, kp_scale 0, kd_scale 1). `"assist"`: each wheel is driven opposite to the HFE joint of the same leg (see below). ACTIVATION always uses `"lock"`. |
+| `transition_wheels.gain` | `double` | `0.0` | Assist gain `k` (> 0). With `mode: assist` and `gain <= 0` the controller falls back to `"lock"`. |
 | `homing_phases` | `double[]` | `[]` | Duration(s) for homing phases [s]. 1 entry = single phase (qi→qf), 2 entries = two phases (qi→qm, qm→qf). Empty disables homing. |
 | `homing_config.<joint>.qi` | `double` | `0.0` | Initial position for homing trajectory [rad] (ignored in phase 1 — uses current position) |
 | `homing_config.<joint>.qf` | `double` | `0.0` | Final position for homing trajectory [rad] |
@@ -68,6 +70,30 @@ on_activate()
 - **INACTIVE**: All motor commands zeroed (velocity=0, kp_scale=0, kd_scale=1). State publishing continues.
 - **ACTIVE**: Wheel IK and leg commands written to hardware.
 - **HOMING**: Legs follow a time-parameterized trajectory (qi→qf or qi→qm→qf). Wheels are locked (velocity=0, kp_scale=1). Transitions to ACTIVE when complete.
+
+## Track-assisted stand-up (`transition_wheels`)
+
+During STAND/REST the HFE joints follow a cosine interpolation in position control:
+
+```
+q(t)    = q_start + ½·(1 − cos(π·t))·(q_target − q_start),     t = elapsed / duration ∈ [0, 1]
+q̇(t)    = (q_target − q_start) · ½·π·sin(π·t) / duration
+ω_wheel = −k · q̇_HFE(t)
+```
+
+With `mode: assist`, every wheel receives `ω_wheel` computed from the HFE joint of the same leg
+(paired by name prefix: `LF_WHEEL → LF_HFE`), with kp_scale 0 and kd_scale 1. The command is 0 at
+start and end and peaks mid-transition; on REST `q̇` changes sign, so the wheels reverse too.
+Assist requires wheels, legs, transitions and an HFE joint for every wheel, otherwise the controller
+falls back to `lock` with a warning. When the transition ends the wheels return to normal ACTIVE control.
+
+Configs without `transition_wheels` (e.g. omniquad, omnicar) keep the default `lock`.
+
+```yaml
+transition_wheels:
+  mode: assist
+  gain: 7.4
+```
 
 ## Wheel IK Types
 

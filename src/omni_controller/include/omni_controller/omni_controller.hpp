@@ -144,9 +144,9 @@ private:
     TransitionTarget transition_target_ = TARGET_REST;
     rclcpp::Time transition_start_time_;
     bool transition_time_initialized_ = false;
-    std::string transition_wheels_mode_;
-    double transition_wheels_gain_;
-    std::map<std::string, std::string> wheel_to_hfe_;
+    std::string transition_wheels_mode_ = "lock"; // "lock" | "assist"
+    double transition_wheels_gain_ = 0.0;           // assist: ω_wheel = −gain · q̇_hfe
+    std::map<std::string, std::string> wheel_to_hfe_; // wheel joint → same-leg HFE joint
 
     // ─── Safety state ─────────────────────────────────────────────────
     SafetyState safety_state_ = SafetyState::SAFETY_NORMAL;
@@ -292,7 +292,11 @@ private:
     /// Set command interface value by "joint/interface" key.
     void set_command(const std::string& key, double value);
 
+    /// Wheel commands during a transition: locked, or (assist) driven opposite to the
+    /// same-leg HFE reference velocity on STAND/REST.
     void write_transition_wheel_commands(double t, double duration);
+    /// Final q target of a leg joint for the current STAND/REST transition.
+    double transition_target_q(const std::string& jnt);
 
     /// Returns true if joint name contains "HFE" (hip flexion joint).
     static bool is_hfe_joint(const std::string& name) {
