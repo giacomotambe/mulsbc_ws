@@ -1,0 +1,185 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500
+
+    state_broadcaster:
+      type: pi3hat_state_broadcaster/Pi3HatStateBroadcaster
+
+    distributor_state_broadcaster:
+      type: distributor_state_broadcaster/DistributorStateBroadcaster
+
+    debug_broadcaster:
+      type: debug_broadcaster/DebugBroadcaster
+
+    imu_sensor:
+      type: imu_sensor_broadcaster/IMUSensorBroadcaster
+
+    joint_controller:
+      type: pi3hat_joint_group_controller/Pi3HatJointGroupController
+
+    omni_controller:
+      type: omni_controller/OmniController
+
+state_broadcaster:
+  ros__parameters:
+    joints:
+      - "LF_HFE"
+      # - "LF_KFE"
+      - "LH_HFE"
+      # - "LH_KFE"
+      - "RF_HFE"
+      # - "RF_KFE"
+      - "RH_HFE"
+      # - "RH_KFE"
+      - "LF_WHEEL"
+      - "LH_WHEEL"
+      - "RF_WHEEL"
+      - "RH_WHEEL"
+
+    # second_encoders:
+    #     - "LF_HFE"
+    #     - "LF_KFE"
+    #     - "LH_HFE"
+    #     - "LH_KFE"
+    #     - "RF_HFE"
+    #     - "RF_KFE"
+    #     - "RH_HFE"
+    #     - "RH_KFE"
+
+    performance_index: true
+
+distributor_state_broadcaster:
+  ros__parameters:
+    distributors:
+      - "Distributor_R"
+      - "Distributor_L"
+
+# TODO: verify the correct frame_id and sensor_name for the IMU
+imu_sensor:
+  ros__parameters:
+    frame_id: imu_link
+    sensor_name: Pi3Hat
+
+    # sensor_name: "IMU"
+    # frame_id: "IMU_NAV"
+
+debug_broadcaster:
+  ros__parameters:
+    joints:
+      - "LF_HFE"
+      # - "LF_KFE"
+      - "LH_HFE"
+      # - "LH_KFE"
+      - "RF_HFE"
+      # - "RF_KFE"
+      - "RH_HFE"
+      # - "RH_KFE"
+      - "RF_WHEEL"
+      - "LF_WHEEL"
+      - "LH_WHEEL"
+      - "RH_WHEEL"
+
+    # second_encoders:
+    #   - "LF_HFE"
+    #   - "LF_KFE"
+    #   - "LH_HFE"
+    #   - "LH_KFE"
+    #   - "RF_HFE"
+    #   - "RF_KFE"
+    #   - "RH_HFE"
+    #   - "RH_KFE"
+
+joint_controller:
+  ros__parameters:
+    joints:
+      - "LF_HFE"
+      # - "LF_KFE"
+      - "LH_HFE"
+      # - "LH_KFE"
+      - "RF_HFE"
+      # - "RF_KFE"
+      - "RH_HFE"
+      # - "RH_KFE"
+      - "LF_WHEEL"
+      - "LH_WHEEL"
+      - "RF_WHEEL"
+      - "RH_WHEEL"
+
+omni_controller:
+  ros__parameters:
+    velocity_lpf:
+      enabled: True # Enable or disable the filter (default: false)
+      cutoff_freq: 2.0 # [Hz]
+    wheel_joints:
+      LEFT:  [LF_WHEEL, LH_WHEEL]
+      RIGHT: [RF_WHEEL, RH_WHEEL]
+
+    joints:
+      - LF_HFE
+      # - LF_KFE
+      - LH_HFE
+      # - LH_KFE
+      - RF_HFE
+      # - RF_KFE
+      - RH_HFE
+      # - RH_KFE
+
+    distributor_names:
+      - Distributor_R
+      - Distributor_L
+
+    # second_encoder_joints:
+    #     - LF_HFE
+    #     - LF_KFE
+    #     - LH_HFE
+    #     - LH_KFE
+    #     - RF_HFE
+    #     - RF_KFE
+    #     - RH_HFE
+    #     - RH_KFE
+
+    # Transitions (rest / stand / activation) — durations for interpolations
+    rest_duration: 5.0 # [s] time to interpolate from stand to rest pose (0 disables transitions)
+    stand_duration: 5.0 # [s] time to interpolate from rest to stand pose (0 disables transitions)
+    activation_duration: 1.0 # [s] time to raise HFE joints during controller activation (0 disables)
+    activation_hip_offset_deg: 7.5 # [deg] HFE offset raised during activation (applied to LF/LH/RF/RH_HFE)
+    joint_targets:
+      LF_HFE: { q_rest: 0.0, q_stand: 1.2 }
+      # LF_KFE: { q_rest: 0.0, q_stand: 1.8 }
+      LH_HFE: { q_rest: 0.0, q_stand: -1.2 }
+      # LH_KFE: { q_rest: 0.0, q_stand: -1.8 }
+      RF_HFE: { q_rest: 0.0, q_stand: -1.2 }
+      # RF_KFE: { q_rest: 0.0, q_stand: -1.8 }
+      RH_HFE: { q_rest: 0.0, q_stand: 1.2 }
+      # RH_KFE: { q_rest: 0.0, q_stand: 1.8 }
+
+    # Wheel IK
+    wheel_mode: ik # Wheel control mode: "ik" (twist → WheelIK) or "direct" (per-wheel velocity)
+    feet_type: differential # Wheel IK type: "mecanum", "differential", or "none"
+    wheel_rad: 0.028 # Wheel radius [m]
+    driveshaft_x: 0.235 # Longitudinal distance from base center to wheel [m]
+    driveshaft_y: 0.188 # Lateral distance from base center to wheel [m]
+    mecanum_angle: 135.0 # Mecanum roller angle [deg] (only used with feet_type: mecanum)
+
+    # Communication
+    input_frequency: 100 # Expected twist command rate [Hz] (sets deadline QoS)
+    BestEffort_QOS: true # true = BestEffort QoS, false = Reliable QoS for twist subscriber
+
+    # Features
+    sim: false # true = skip hardware, accept commands without real motors
+    pub_odom: false # Publish wheel odometry on ~/odom
+    pub_performance: true # Publish CAN packet loss & cycle duration on ~/performance
+
+    safety:
+      enabled: true
+      temp_warning_threshold: 50.0 # [C] motor temp above this triggers throttling (kp/kd halved)
+      temp_critical_threshold: 60.0 # [C] motor temp above this triggers the critical_strategy
+      battery_min_voltage: 20.5 # [V] distributor voltage below this triggers the critical_strategy
+      temp_recovery_hysteresis: 1.0 # [C] temp must drop below (warning - hysteresis) to recover
+      volt_recovery_hysteresis: 0.5 # [V] voltage must rise above (min + hysteresis) to recover
+      ema_window_samples: 5000 # EMA filter length for temp/voltage; averages over ema_window_samples / update_rate seconds
+      # Action on critical fault: "damping" (ramp to zero), "stop" (immediate zero), "default_config" (apply default kp/kd)
+      critical_strategy: "default_config"
+      damping_duration: 10.0 # [s] ramp-down time when critical_strategy is "damping"
+      joints_reference_timeout: 0.5 # [s] if no joint reference received for this long, hold last leg position
+      heartbeat_timeout: 1.0 # [s] NUC heartbeat timeout; 0 disables (only checked after first heartbeat)

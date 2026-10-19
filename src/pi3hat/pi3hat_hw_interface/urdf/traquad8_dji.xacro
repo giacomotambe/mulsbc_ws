@@ -1,0 +1,112 @@
+<?xml version="1.0" ?>
+<robot name="omnicar"  xmlns:xacro="http://ros.org/wiki/xacro">
+
+    <xacro:macro name="joint" params="name id bus kp kd second_encoder_source max_pos_limit min_pos_limit actuator_trasmission max_current_A">
+        <joint name="${name}">
+            <param name="id">${id}</param>
+            <param name="bus">${bus}</param>
+            <param name="second_encoder_source">${second_encoder_source}</param>
+            <param name="type">motor</param>
+
+            <param name="KP">${kp}</param>
+            <param name="KD">${kd}</param>
+            <param name="KI">0.0</param>
+            <param name="ilimit">0.0</param>
+            <param name="iratelimit">0.0</param>
+            <param name="max_position_slip">0.0</param>
+            <param name="max_velocity_slip">0.0</param>
+            <param name="enable_motor_temperature">0</param>
+            <param name="max_pos_limit">${max_pos_limit}</param>
+            <param name="min_pos_limit">${min_pos_limit}</param>
+            <param name="max_velocity">10.0</param>
+            <param name="max_effort">15.0</param>
+            <param name="actuator_trasmission">${actuator_trasmission}</param>
+            <param name="position_offset">0</param>
+            <param name="second_encoder_trasmission">3.23076923</param>
+            <param name="max_voltage">31.0</param>
+            <param name="flux_brake_margin_voltage">5.0</param>
+            <param name="max_current_A">${max_current_A}</param>
+
+            <param name="position_res">64</param>
+            <param name="velocity_res">64</param>
+            <param name="torque_res">64</param>
+            <param name="q_current_res">8</param>
+            <param name="d_current_res">0</param>
+            <param name="abs_position_res">0</param>
+            <param name="power_res">8</param>
+            <param name="motor_temperature_res">0</param>
+            <param name="voltage_res">16</param>
+            <param name="temperature_res">8</param>
+            <param name="position_error_res">64</param>
+            <param name="velocity_error_res">64</param>
+            <param name="torque_error_res">64</param>
+            <param name="second_encoder_position_res">64</param>
+            <param name="second_encoder_velocity_res">64</param>
+        </joint>
+    </xacro:macro>
+
+     <xacro:macro name="leg_joint" params="name id bus">
+     <xacro:joint name="${name}" id="${id}" bus="${bus}" kp="60.0" kd="0.6" second_encoder_source="-1" max_pos_limit="3.14" min_pos_limit="-3.14" actuator_trasmission="9" max_current_A="80.0"/>
+    </xacro:macro>
+
+    <xacro:macro name="wheel_joint" params="name id bus">
+        <xacro:joint name="${name}" id="${id}" bus="${bus}" kp="0.0" kd="0.9" second_encoder_source="-1" max_pos_limit="5000.0" min_pos_limit="-5000.0" actuator_trasmission="15" max_current_A="40.0"/>
+    </xacro:macro>
+
+    <xacro:macro name="distributor_joint" params="name id">
+        <joint name="${name}">
+            <param name="id">${id}</param>
+            <param name="bus">5</param>
+            <param name="type">power_dist</param>
+
+            <param name="voltage">64</param>
+            <param name="current">64</param>
+            <param name="temperature">64</param>
+            <param name="energy">0</param>
+            <param name="state">0</param>
+            <param name="switch_state">0</param>
+            <param name="lock_time">0</param>
+            <param name="boot_time">0</param>
+        </joint>
+    </xacro:macro>
+
+    <ros2_control name="MoteusPi3Hat_Interface" type="system">
+        <hardware>
+            <plugin>pi3hat_hw_interface/MoteusPi3Hat_Interface</plugin>
+            <param name="timeout_ns">0</param>
+            <param name="min_tx_wait_ns">20000</param>
+            <param name="rx_baseline_wait_ns">200000</param>
+            <param name="rx_extra_wait_ns">20000</param>
+            <param name="CPU_affinity">1</param>
+
+            <param name="request_attitude">1</param>
+
+            <param name="mounting_deg_roll">0</param>
+            <param name="mounting_deg_pitch">0</param>
+            <param name="mounting_deg_yaw">0</param>
+
+            <param name="attitude_hz">400</param>
+        </hardware>
+
+        <xacro:leg_joint name="LF_HFE" id="3" bus="2"/>
+        <!-- <xacro:leg_joint name="LF_KFE" id="4" bus="2"/> -->
+
+        <xacro:leg_joint name="RF_HFE" id="5" bus="4"/>
+        <!-- <xacro:leg_joint name="RF_KFE" id="6" bus="4"/> -->
+
+        <xacro:leg_joint name="LH_HFE" id="9" bus="1"/>
+        <!-- <xacro:leg_joint name="LH_KFE" id="10" bus="1"/> -->
+
+        <xacro:leg_joint name="RH_HFE" id="7" bus="3"/>
+        <!-- <xacro:leg_joint name="RH_KFE" id="8" bus="3"/> -->
+
+        <xacro:wheel_joint name="LF_WHEEL" id="4" bus="2"/>
+        <xacro:wheel_joint name="RF_WHEEL" id="6" bus="4"/>
+        <xacro:wheel_joint name="LH_WHEEL" id="10" bus="1"/>
+        <xacro:wheel_joint name="RH_WHEEL" id="8" bus="3"/>
+
+        <xacro:distributor_joint name="Distributor_L" id="32"/>
+        <xacro:distributor_joint name="Distributor_R" id="33"/>
+
+    </ros2_control>
+</robot>
