@@ -90,27 +90,89 @@ void DifferentialIK::configure(
     const WheelIKConfig& config, const std::vector<std::string>& wheel_names
 )
 {
-    if (wheel_names.size() != 2) {
-        throw std::invalid_argument(
-            "DifferentialIK requires exactly 2 wheels, got " + std::to_string(wheel_names.size())
-        );
+    if (config.wheel_sides.empty()) {
+        if (wheel_names.size() != 2) {
+            throw std::invalid_argument(
+                "DifferentialIK without wheel_sides requires exactly 2 wheels, got " +
+                std::to_string(wheel_names.size())
+            );
+        }
+        sides_ = {1, -1};
+    } else {
+        if (config.wheel_sides.size() != wheel_names.size()) {
+            throw std::invalid_argument("DifferentialIK: wheel_sides size must match wheel count");
+        }
+        bool has_left = false, has_right = false;
+        for (int s : config.wheel_sides) {
+            if (s != 1 && s != -1)
+                throw std::invalid_argument("DifferentialIK: wheel_sides must be +1 or -1");
+            has_left |= s == 1;
+            has_right |= s == -1;
+        }
+        if (!has_left || !has_right)
+            throw std::invalid_argument("DifferentialIK needs at least one wheel per side");
+        sides_ = config.wheel_sides;
     }
+
+    if (!config.shoulder_signs.empty() && config.shoulder_signs.size() != sides_.size()) {
+        throw std::invalid_argument("DifferentialIK: shoulder_signs size must match wheel count");
+    }
+    shoulder_signs_ = config.shoulder_signs;
+    shoulder_signs_.resize(sides_.size(), 0);
+
     wheel_rad_ = config.wheel_rad;
     track_width_ = config.track_width;
+    leg_length_ = config.leg_length;
+    shoulder_coupling_ = config.shoulder_coupling;
+    q_.assign(sides_.size(), 0.0);
+    qd_.assign(sides_.size(), 0.0);
+}
+
+void DifferentialIK::set_leg_state(const std::vector<double>& q, const std::vector<double>& qd)
+{
+    if (q.size() != q_.size() || qd.size() != qd_.size()) {
+        throw std::invalid_argument("DifferentialIK: leg state size must match wheel count");
+    }
+    q_ = q;
+    qd_ = qd;
+}
+
+double DifferentialIK::shoulder_term(size_t i) const
+{
+    if (leg_length_ <= 0.0 || shoulder_signs_[i] == 0)
+        return 0.0;
+    double alpha = shoulder_signs_[i] * q_[i];
+    return (leg_length_ * std::sin(alpha) / wheel_rad_ + shoulder_coupling_) * qd_[i];
 }
 
 std::vector<double> DifferentialIK::inverse(double vx, double /*vy*/, double omega) const
 {
-    // wheel_names order: [left, right]
-    double v_left = (vx - omega * track_width_ / 2.0) / wheel_rad_;
-    double v_right = -(vx + omega * track_width_ / 2.0) / wheel_rad_;
-    return {v_left, v_right};
+    // Right wheels spin the other way for forward motion (side = −1)
+    std::vector<double> wheel_vels(sides_.size());
+    for (size_t i = 0; i < sides_.size(); i++) {
+        wheel_vels[i] =
+            (sides_[i] * vx - omega * track_width_ / 2.0) / wheel_rad_ - shoulder_term(i);
+    }
+    return wheel_vels;
 }
 
 std::array<double, 3> DifferentialIK::forward(const std::vector<double>& wheel_velocities) const
 {
-    double v_left = wheel_velocities[0] * wheel_rad_;
-    double v_right = -wheel_velocities[1] * wheel_rad_;
+    // Ground speed of each track, averaged per side
+    double v_left = 0.0, v_right = 0.0;
+    int n_left = 0, n_right = 0;
+    for (size_t i = 0; i < sides_.size(); i++) {
+        double v = sides_[i] * (wheel_velocities[i] + shoulder_term(i)) * wheel_rad_;
+        if (sides_[i] > 0) {
+            v_left += v;
+            n_left++;
+        } else {
+            v_right += v;
+            n_right++;
+        }
+    }
+    v_left /= n_left;
+    v_right /= n_right;
     double vx = (v_left + v_right) / 2.0;
     double omega = (v_right - v_left) / track_width_;
     return {vx, 0.0, omega};

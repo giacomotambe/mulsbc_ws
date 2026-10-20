@@ -125,19 +125,19 @@ TEST_F(DifferentialIKTest, ForwardOnly)
 {
     double vx = 1.0;
     auto vels = ik->inverse(vx, 0.0, 0.0);
-    // Both wheels same speed: vx / wheel_rad = 1.0 / 0.1 = 10
+    // Same ground speed: vx / wheel_rad = 1.0 / 0.1 = 10, right wheel mirrored
     EXPECT_NEAR(vels[0], 10.0, 1e-10);
-    EXPECT_NEAR(vels[1], 10.0, 1e-10);
+    EXPECT_NEAR(vels[1], -10.0, 1e-10);
 }
 
 TEST_F(DifferentialIKTest, PureRotation)
 {
     double omega = 2.0;
     auto vels = ik->inverse(0.0, 0.0, omega);
-    // left = -omega * track/2 / r = -2.0 * 0.25 / 0.1 = -5.0
-    // right = +omega * track/2 / r = +5.0
+    // left ground speed = -omega * track/2 = -0.5 → -5.0
+    // right ground speed = +0.5, mirrored wheel → -5.0
     EXPECT_NEAR(vels[0], -5.0, 1e-10);
-    EXPECT_NEAR(vels[1], 5.0, 1e-10);
+    EXPECT_NEAR(vels[1], -5.0, 1e-10);
 }
 
 TEST_F(DifferentialIKTest, IKFKRoundTrip)
@@ -182,7 +182,102 @@ TEST_F(DifferentialIKTest, SingleWheelPerSideWorks)
     auto vels = fresh.inverse(1.0, 0.0, 0.0);
     ASSERT_EQ(vels.size(), 2u);
     EXPECT_NEAR(vels[0], 10.0, 1e-10);
-    EXPECT_NEAR(vels[1], 10.0, 1e-10);
+    EXPECT_NEAR(vels[1], -10.0, 1e-10);
+}
+
+// ─── DifferentialIK with tracked legs (traquad) ─────────────────────────────
+
+class TrackedLegsIKTest: public ::testing::Test {
+protected:
+    void SetUp() override
+    {
+        WheelIKConfig config;
+        config.wheel_rad = 0.028;
+        config.track_width = 0.395;
+        config.wheel_sides = {1, 1, -1, -1};        // LF, LH, RF, RH
+        config.shoulder_signs = {1, -1, -1, 1};     // σ = side · (front +1, hind −1)
+        config.leg_length = 0.19;
+        config.shoulder_coupling = 1.0;
+        ik.configure(config, {"LF_WHEEL", "LH_WHEEL", "RF_WHEEL", "RH_WHEEL"});
+    }
+    DifferentialIK ik;
+};
+
+TEST_F(TrackedLegsIKTest, NumWheels) { EXPECT_EQ(ik.num_wheels(), 4u); }
+
+TEST_F(TrackedLegsIKTest, StillShouldersIsPlainDifferential)
+{
+    // q̇ = 0: the shoulder angles do not matter
+    ik.set_leg_state({1.2, -1.2, -1.2, 1.2}, {0.0, 0.0, 0.0, 0.0});
+    double vx = 0.2, omega = 0.5;
+    auto vels = ik.inverse(vx, 0.0, omega);
+    double left = (vx - omega * 0.395 / 2.0) / 0.028;
+    double right = -(vx + omega * 0.395 / 2.0) / 0.028;
+    EXPECT_NEAR(vels[0], left, 1e-10);
+    EXPECT_NEAR(vels[1], left, 1e-10);
+    EXPECT_NEAR(vels[2], right, 1e-10);
+    EXPECT_NEAR(vels[3], right, 1e-10);
+}
+
+TEST_F(TrackedLegsIKTest, StandingStillWithMovingShoulders)
+{
+    // Base still, shoulders opening towards stand: ω = −(l·sin α / r + c)·q̇ on every leg
+    std::vector<double> q = {0.6, -0.6, -0.6, 0.6};
+    std::vector<double> qd = {0.3, -0.3, -0.3, 0.3};
+    ik.set_leg_state(q, qd);
+    auto vels = ik.inverse(0.0, 0.0, 0.0);
+    double k = 0.19 * std::sin(0.6) / 0.028 + 1.0;
+    for (size_t i = 0; i < 4; i++)
+        EXPECT_NEAR(vels[i], -k * qd[i], 1e-10);
+
+    auto recovered = ik.forward(vels);
+    EXPECT_NEAR(recovered[0], 0.0, 1e-10);
+    EXPECT_NEAR(recovered[2], 0.0, 1e-10);
+}
+
+TEST_F(TrackedLegsIKTest, IKFKRoundTripWithMovingShoulders)
+{
+    ik.set_leg_state({1.0, -1.3, -1.1, 1.2}, {0.2, 0.1, -0.4, 0.3});
+    double vx = 0.15, omega = -0.4;
+    auto recovered = ik.forward(ik.inverse(vx, 0.0, omega));
+    EXPECT_NEAR(recovered[0], vx, 1e-10);
+    EXPECT_NEAR(recovered[1], 0.0, 1e-10);
+    EXPECT_NEAR(recovered[2], omega, 1e-10);
+}
+
+TEST_F(TrackedLegsIKTest, NoLegLengthDisablesShoulderTerm)
+{
+    WheelIKConfig config;
+    config.wheel_rad = 0.028;
+    config.track_width = 0.395;
+    config.wheel_sides = {1, 1, -1, -1};
+    config.shoulder_signs = {1, -1, -1, 1};
+    DifferentialIK plain;
+    plain.configure(config, {"LF_WHEEL", "LH_WHEEL", "RF_WHEEL", "RH_WHEEL"});
+    plain.set_leg_state({1.2, -1.2, -1.2, 1.2}, {0.5, -0.5, -0.5, 0.5});
+    auto vels = plain.inverse(0.0, 0.0, 0.0);
+    for (double v : vels)
+        EXPECT_NEAR(v, 0.0, 1e-10);
+}
+
+TEST(TrackedLegsIKConfig, InvalidSidesThrow)
+{
+    WheelIKConfig config;
+    DifferentialIK ik;
+    config.wheel_sides = {1, 1};
+    EXPECT_THROW(ik.configure(config, {"A", "B"}), std::invalid_argument);
+    config.wheel_sides = {1, 0};
+    EXPECT_THROW(ik.configure(config, {"A", "B"}), std::invalid_argument);
+    config.wheel_sides = {1, -1, 1};
+    EXPECT_THROW(ik.configure(config, {"A", "B"}), std::invalid_argument);
+}
+
+TEST(TrackedLegsIKConfig, WrongLegStateSizeThrows)
+{
+    DifferentialIK ik;
+    WheelIKConfig config;
+    ik.configure(config, {"LEFT", "RIGHT"});
+    EXPECT_THROW(ik.set_leg_state({0.0}, {0.0}), std::invalid_argument);
 }
 
 TEST(DifferentialMultiWheelConcept, IKOutputFansOutToGroups)

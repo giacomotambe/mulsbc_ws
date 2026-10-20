@@ -42,6 +42,8 @@ CallbackReturn OmniController::on_init()
         auto_declare<double>("driveshaft_y", 0.188);
         auto_declare<double>("mecanum_angle", 135.0);
         auto_declare<double>("track_width", 0.4);
+        auto_declare<double>("track_legs.leg_length", 0.0);
+        auto_declare<double>("track_legs.shoulder_coupling", 1.0);
 
         // Communication
         auto_declare<int>("input_frequency", 100);
@@ -103,6 +105,7 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
     // Build wheel_joints_ (flat list) and wheel_groups_ (IK index → joints)
     wheel_joints_.clear();
     wheel_groups_.clear();
+    std::vector<int> wheel_sides; // differential: +1 left, −1 right per IK slot
     if (feet_type == "mecanum") {
         const std::vector<std::string> positions = {"LF", "LH", "RF", "RH"};
         for (const auto& pos : positions) {
@@ -129,7 +132,12 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                 );
                 return CallbackReturn::ERROR;
             }
-            wheel_groups_.push_back(joints);
+            // One IK slot per wheel: tracks on the same side can need different
+            // velocities while the shoulders move
+            for (const auto& jnt : joints) {
+                wheel_groups_.push_back({jnt});
+                wheel_sides.push_back(pos == "LEFT" ? 1 : -1);
+            }
             wheel_joints_.insert(wheel_joints_.end(), joints.begin(), joints.end());
         }
     }
@@ -181,10 +189,57 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
             ik_config.driveshaft_y = get_node()->get_parameter("driveshaft_y").as_double();
             ik_config.mecanum_angle = get_node()->get_parameter("mecanum_angle").as_double();
             ik_config.track_width = get_node()->get_parameter("track_width").as_double();
+            ik_config.wheel_sides = wheel_sides;
+
+            // Tracked legs: pair each wheel with the HFE joint of the same leg
+            // (LF_WHEEL → LF_HFE) and use its angle/velocity in the differential IK
+            wheel_hfe_.clear();
+            double leg_length = get_node()->get_parameter("track_legs.leg_length").as_double();
+            if (feet_type == "differential" && leg_length > 0.0) {
+                std::vector<int> shoulder_signs;
+                std::vector<std::string> wheel_hfe;
+                for (size_t i = 0; i < wheel_groups_.size(); i++) {
+                    const std::string& wheel = wheel_groups_[i].front();
+                    std::string prefix = wheel.substr(0, wheel.find('_'));
+                    std::string hfe;
+                    for (const auto& jnt : joints_) {
+                        if (is_hfe_joint(jnt) && jnt.substr(0, jnt.find('_')) == prefix) {
+                            hfe = jnt;
+                            break;
+                        }
+                    }
+                    // σ = side · (+1 front, −1 hind), from the leg prefix (LF, LH, RF, RH)
+                    char fh = prefix.size() == 2 ? prefix[1] : '?';
+                    if (hfe.empty() || (fh != 'F' && fh != 'H')) {
+                        wheel_hfe.clear();
+                        RCLCPP_WARN(
+                            get_node()->get_logger(),
+                            "track_legs: no front/hind HFE joint found for wheel '%s'. "
+                            "Shoulder compensation disabled.",
+                            wheel.c_str()
+                        );
+                        break;
+                    }
+                    shoulder_signs.push_back(wheel_sides[i] * (fh == 'F' ? 1 : -1));
+                    wheel_hfe.push_back(hfe);
+                }
+                if (!wheel_hfe.empty()) {
+                    wheel_hfe_ = wheel_hfe;
+                    ik_config.shoulder_signs = shoulder_signs;
+                    ik_config.leg_length = leg_length;
+                    ik_config.shoulder_coupling =
+                        get_node()->get_parameter("track_legs.shoulder_coupling").as_double();
+                    RCLCPP_INFO(
+                        get_node()->get_logger(),
+                        "track_legs: shoulder compensation enabled, leg_length=%.3f m, "
+                        "shoulder_coupling=%.2f",
+                        ik_config.leg_length, ik_config.shoulder_coupling
+                    );
+                }
+            }
 
             try {
-                // For differential with multi-wheel groups, pass one name per group
-                // (IK only cares about count, not the actual names)
+                // One name per IK slot (IK only cares about count, not the actual names)
                 std::vector<std::string> ik_names;
                 for (const auto& group : wheel_groups_)
                     ik_names.push_back(group.front());
@@ -1091,6 +1146,7 @@ void OmniController::publish_odometry(const rclcpp::Time& time)
         wheel_vels[g] = sum / static_cast<double>(wheel_groups_[g].size());
     }
 
+    update_wheel_ik_leg_state();
     auto odom = wheel_ik_->forward(wheel_vels);
     odom_msg_.header.set__stamp(time);
     odom_msg_.twist.linear.set__x(odom[0]);
@@ -1113,6 +1169,7 @@ void OmniController::write_wheel_commands()
     double vy = lpf_enabled_ ? base_vel_filtered_[1] : base_vel_[1];
     double wz = lpf_enabled_ ? base_vel_filtered_[2] : base_vel_[2];
 
+    update_wheel_ik_leg_state();
     auto wheel_vels = wheel_ik_->inverse(vx, vy, wz);
 
     for (size_t g = 0; g < wheel_groups_.size(); g++) {
@@ -1126,6 +1183,18 @@ void OmniController::write_wheel_commands()
             }
         }
     }
+}
+
+void OmniController::update_wheel_ik_leg_state()
+{
+    if (wheel_hfe_.empty())
+        return;
+    std::vector<double> q(wheel_hfe_.size()), qd(wheel_hfe_.size());
+    for (size_t i = 0; i < wheel_hfe_.size(); i++) {
+        q[i] = get_state(wheel_hfe_[i] + "/" + hardware_interface::HW_IF_POSITION);
+        qd[i] = get_state(wheel_hfe_[i] + "/" + hardware_interface::HW_IF_VELOCITY);
+    }
+    wheel_ik_->set_leg_state(q, qd);
 }
 
 void OmniController::write_direct_wheel_commands()

@@ -128,6 +128,7 @@ private:
 
     // ─── Wheel IK / direct mode ────────────────────────────────────────
     std::unique_ptr<WheelIK> wheel_ik_;
+    std::vector<std::string> wheel_hfe_; // IK slot → HFE joint (empty: no shoulder compensation)
     WheelMode wheel_mode_ = WHEEL_IK;
 
     // ─── State machine ──────────────────────────────────────────────────
@@ -274,6 +275,8 @@ private:
     void publish_distributor_states(const rclcpp::Time& time);
     void publish_odometry(const rclcpp::Time& time);
     void write_wheel_commands();
+    /// Pass the HFE angle/velocity of each wheel's leg to the IK (tracked legs only).
+    void update_wheel_ik_leg_state();
     void write_direct_wheel_commands();
     void write_leg_commands();
     void zero_all_commands();
