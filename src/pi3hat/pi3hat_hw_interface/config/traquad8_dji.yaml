@@ -158,10 +158,10 @@ omni_controller:
 
     # Wheel IK
     wheel_mode: ik # Wheel control mode: "ik" (twist → WheelIK) or "direct" (per-wheel velocity)
-    feet_type: differential # Wheel IK type: "mecanum", "differential", or "none"
+    feet_type: traquad # Wheel IK type: "mecanum", "differential", "traquad" (differential + shoulder joints), or "none"
     wheel_rad: 0.028 # Wheel radius [m]
-    track_legs: # differential only: tracks follow the shoulder motion
-      leg_length: 0.19 # HFE → ankle [m] (0 disables shoulder compensation)
+    traquad: # feet_type: traquad only
+      leg_length: 0.19 # HFE → ankle [m]
       shoulder_coupling: 1.0 # 1 = wheel encoder relative to the leg, 0 = relative to the body (to verify)
     driveshaft_x: 0.235 # Longitudinal distance from base center to wheel [m]
     driveshaft_y: 0.188 # Lateral distance from base center to wheel [m]

@@ -42,8 +42,8 @@ CallbackReturn OmniController::on_init()
         auto_declare<double>("driveshaft_y", 0.188);
         auto_declare<double>("mecanum_angle", 135.0);
         auto_declare<double>("track_width", 0.4);
-        auto_declare<double>("track_legs.leg_length", 0.0);
-        auto_declare<double>("track_legs.shoulder_coupling", 1.0);
+        auto_declare<double>("traquad.leg_length", 0.19);
+        auto_declare<double>("traquad.shoulder_coupling", 1.0);
 
         // Communication
         auto_declare<int>("input_frequency", 100);
@@ -105,7 +105,7 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
     // Build wheel_joints_ (flat list) and wheel_groups_ (IK index → joints)
     wheel_joints_.clear();
     wheel_groups_.clear();
-    std::vector<int> wheel_sides; // differential: +1 left, −1 right per IK slot
+    std::vector<int> wheel_sides; // traquad: +1 left, −1 right per IK slot
     if (feet_type == "mecanum") {
         const std::vector<std::string> positions = {"LF", "LH", "RF", "RH"};
         for (const auto& pos : positions) {
@@ -132,8 +132,23 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                 );
                 return CallbackReturn::ERROR;
             }
-            // One IK slot per wheel: tracks on the same side can need different
-            // velocities while the shoulders move
+            wheel_groups_.push_back(joints);
+            wheel_joints_.insert(wheel_joints_.end(), joints.begin(), joints.end());
+        }
+    } else if (feet_type == "traquad") {
+        // One IK slot per wheel: tracks on the same side can need different velocities
+        // while the shoulders move
+        const std::vector<std::string> positions = {"LEFT", "RIGHT"};
+        for (const auto& pos : positions) {
+            auto joints = get_node()->get_parameter("wheel_joints." + pos).as_string_array();
+            if (joints.empty()) {
+                RCLCPP_ERROR(
+                    get_node()->get_logger(),
+                    "wheel_joints.%s requires at least one joint for feet_type='traquad'",
+                    pos.c_str()
+                );
+                return CallbackReturn::ERROR;
+            }
             for (const auto& jnt : joints) {
                 wheel_groups_.push_back({jnt});
                 wheel_sides.push_back(pos == "LEFT" ? 1 : -1);
@@ -189,15 +204,11 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
             ik_config.driveshaft_y = get_node()->get_parameter("driveshaft_y").as_double();
             ik_config.mecanum_angle = get_node()->get_parameter("mecanum_angle").as_double();
             ik_config.track_width = get_node()->get_parameter("track_width").as_double();
-            ik_config.wheel_sides = wheel_sides;
 
-            // Tracked legs: pair each wheel with the HFE joint of the same leg
-            // (LF_WHEEL → LF_HFE) and use its angle/velocity in the differential IK
+            // Traquad: pair each wheel with the HFE joint of the same leg (LF_WHEEL → LF_HFE);
+            // σ = side · (+1 front, −1 hind) from the leg prefix (LF, LH, RF, RH)
             wheel_hfe_.clear();
-            double leg_length = get_node()->get_parameter("track_legs.leg_length").as_double();
-            if (feet_type == "differential" && leg_length > 0.0) {
-                std::vector<int> shoulder_signs;
-                std::vector<std::string> wheel_hfe;
+            if (feet_type == "traquad") {
                 for (size_t i = 0; i < wheel_groups_.size(); i++) {
                     const std::string& wheel = wheel_groups_[i].front();
                     std::string prefix = wheel.substr(0, wheel.find('_'));
@@ -208,38 +219,32 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                             break;
                         }
                     }
-                    // σ = side · (+1 front, −1 hind), from the leg prefix (LF, LH, RF, RH)
                     char fh = prefix.size() == 2 ? prefix[1] : '?';
                     if (hfe.empty() || (fh != 'F' && fh != 'H')) {
-                        wheel_hfe.clear();
-                        RCLCPP_WARN(
+                        RCLCPP_ERROR(
                             get_node()->get_logger(),
-                            "track_legs: no front/hind HFE joint found for wheel '%s'. "
-                            "Shoulder compensation disabled.",
+                            "feet_type='traquad': no front/hind HFE joint found for wheel '%s'",
                             wheel.c_str()
                         );
-                        break;
+                        return CallbackReturn::ERROR;
                     }
-                    shoulder_signs.push_back(wheel_sides[i] * (fh == 'F' ? 1 : -1));
-                    wheel_hfe.push_back(hfe);
+                    wheel_hfe_.push_back(hfe);
+                    ik_config.shoulder_signs.push_back(wheel_sides[i] * (fh == 'F' ? 1 : -1));
                 }
-                if (!wheel_hfe.empty()) {
-                    wheel_hfe_ = wheel_hfe;
-                    ik_config.shoulder_signs = shoulder_signs;
-                    ik_config.leg_length = leg_length;
-                    ik_config.shoulder_coupling =
-                        get_node()->get_parameter("track_legs.shoulder_coupling").as_double();
-                    RCLCPP_INFO(
-                        get_node()->get_logger(),
-                        "track_legs: shoulder compensation enabled, leg_length=%.3f m, "
-                        "shoulder_coupling=%.2f",
-                        ik_config.leg_length, ik_config.shoulder_coupling
-                    );
-                }
+                ik_config.wheel_sides = wheel_sides;
+                ik_config.leg_length = get_node()->get_parameter("traquad.leg_length").as_double();
+                ik_config.shoulder_coupling =
+                    get_node()->get_parameter("traquad.shoulder_coupling").as_double();
+                RCLCPP_INFO(
+                    get_node()->get_logger(),
+                    "Traquad IK: leg_length=%.3f m, shoulder_coupling=%.2f",
+                    ik_config.leg_length, ik_config.shoulder_coupling
+                );
             }
 
             try {
-                // One name per IK slot (IK only cares about count, not the actual names)
+                // For differential with multi-wheel groups, pass one name per group
+                // (IK only cares about count, not the actual names)
                 std::vector<std::string> ik_names;
                 for (const auto& group : wheel_groups_)
                     ik_names.push_back(group.front());

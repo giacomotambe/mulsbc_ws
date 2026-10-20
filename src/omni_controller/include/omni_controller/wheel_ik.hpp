@@ -15,14 +15,11 @@ struct WheelIKConfig {
     double mecanum_angle = 135.0; // degrees
     double track_width = 0.4;
 
-    // Differential only (tracked legs, see DifferentialIK).
-    // Per-wheel side: +1 left, −1 right. Empty → exactly two wheels [left, right].
-    std::vector<int> wheel_sides;
-    // Per-wheel sign σ of the leg carrying the track (α = σ·q_HFE, α > 0 = leg towards
-    // the ground), 0 = no leg. Empty → no shoulder compensation.
-    std::vector<int> shoulder_signs;
-    double leg_length = 0.0;        // HFE → ankle [m]; 0 disables shoulder compensation
-    double shoulder_coupling = 1.0; // c: 1 = wheel encoder relative to the leg, 0 = to the body
+    // Traquad only (see TraquadIK)
+    std::vector<int> wheel_sides;    // per wheel: +1 left, −1 right
+    std::vector<int> shoulder_signs; // per wheel: σ of its leg, α = σ·q_HFE (α > 0 = leg down)
+    double leg_length = 0.19;        // HFE → ankle [m]
+    double shoulder_coupling = 1.0;  // c: 1 = wheel encoder relative to the leg, 0 = to the body
 };
 
 class WheelIK {
@@ -59,15 +56,30 @@ private:
     double odom_[3][4] = {};
 };
 
-/// Differential (skid-steer) IK, one velocity per wheel.
+/// 2-wheel differential IK
+class DifferentialIK: public WheelIK {
+public:
+    void
+    configure(const WheelIKConfig& config, const std::vector<std::string>& wheel_names) override;
+
+    std::vector<double> inverse(double vx, double vy, double omega) const override;
+    std::array<double, 3> forward(const std::vector<double>& wheel_velocities) const override;
+    size_t num_wheels() const override { return 2; }
+
+private:
+    double wheel_rad_ = 0.05;
+    double track_width_ = 0.4;
+};
+
+/// Traquad IK: skid-steer on tracked legs, one velocity per wheel.
 ///
-/// Tracked legs (traquad): each track hangs from a passive ankle at the end of a leg
-/// rotating about the HFE axis and lies flat on the ground. With α = σ·q_HFE:
+/// Each track hangs from a passive ankle at the end of a leg rotating about the HFE axis
+/// and lies flat on the ground. With α = σ·q_HFE and κ = wheel side:
 ///
 ///   ω_i = (κ_i·vx − (track_width/2)·ωz) / r − (leg_length·sin α_i / r + c)·q̇_i
 ///
-/// κ_i = wheel side. With still shoulders (q̇ = 0) this is plain differential drive.
-class DifferentialIK: public WheelIK {
+/// With still shoulders (q̇ = 0) this equals DifferentialIK.
+class TraquadIK: public WheelIK {
 public:
     void
     configure(const WheelIKConfig& config, const std::vector<std::string>& wheel_names) override;
@@ -84,14 +96,14 @@ private:
 
     double wheel_rad_ = 0.05;
     double track_width_ = 0.4;
-    std::vector<int> sides_ = {1, -1};
-    std::vector<int> shoulder_signs_ = {0, 0};
-    double leg_length_ = 0.0;
+    std::vector<int> sides_;
+    std::vector<int> shoulder_signs_;
+    double leg_length_ = 0.19;
     double shoulder_coupling_ = 1.0;
-    std::vector<double> q_ = {0.0, 0.0}, qd_ = {0.0, 0.0};
+    std::vector<double> q_, qd_;
 };
 
-/// Factory: create WheelIK by name ("mecanum", "differential")
+/// Factory: create WheelIK by name ("mecanum", "differential", "traquad")
 /// Returns nullptr for "none"
 std::unique_ptr<WheelIK> create_wheel_ik(const std::string& type);
 

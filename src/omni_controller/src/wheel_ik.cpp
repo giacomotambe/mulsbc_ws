@@ -90,62 +90,80 @@ void DifferentialIK::configure(
     const WheelIKConfig& config, const std::vector<std::string>& wheel_names
 )
 {
-    if (config.wheel_sides.empty()) {
-        if (wheel_names.size() != 2) {
-            throw std::invalid_argument(
-                "DifferentialIK without wheel_sides requires exactly 2 wheels, got " +
-                std::to_string(wheel_names.size())
-            );
-        }
-        sides_ = {1, -1};
-    } else {
-        if (config.wheel_sides.size() != wheel_names.size()) {
-            throw std::invalid_argument("DifferentialIK: wheel_sides size must match wheel count");
-        }
-        bool has_left = false, has_right = false;
-        for (int s : config.wheel_sides) {
-            if (s != 1 && s != -1)
-                throw std::invalid_argument("DifferentialIK: wheel_sides must be +1 or -1");
-            has_left |= s == 1;
-            has_right |= s == -1;
-        }
-        if (!has_left || !has_right)
-            throw std::invalid_argument("DifferentialIK needs at least one wheel per side");
-        sides_ = config.wheel_sides;
+    if (wheel_names.size() != 2) {
+        throw std::invalid_argument(
+            "DifferentialIK requires exactly 2 wheels, got " + std::to_string(wheel_names.size())
+        );
     }
+    wheel_rad_ = config.wheel_rad;
+    track_width_ = config.track_width;
+}
 
-    if (!config.shoulder_signs.empty() && config.shoulder_signs.size() != sides_.size()) {
-        throw std::invalid_argument("DifferentialIK: shoulder_signs size must match wheel count");
+std::vector<double> DifferentialIK::inverse(double vx, double /*vy*/, double omega) const
+{
+    // wheel_names order: [left, right]
+    double v_left = (vx - omega * track_width_ / 2.0) / wheel_rad_;
+    double v_right = -(vx + omega * track_width_ / 2.0) / wheel_rad_;
+    return {v_left, v_right};
+}
+
+std::array<double, 3> DifferentialIK::forward(const std::vector<double>& wheel_velocities) const
+{
+    double v_left = wheel_velocities[0] * wheel_rad_;
+    double v_right = -wheel_velocities[1] * wheel_rad_;
+    double vx = (v_left + v_right) / 2.0;
+    double omega = (v_right - v_left) / track_width_;
+    return {vx, 0.0, omega};
+}
+
+// ─── TraquadIK ──────────────────────────────────────────────────────────────
+
+void TraquadIK::configure(const WheelIKConfig& config, const std::vector<std::string>& wheel_names)
+{
+    size_t n = wheel_names.size();
+    if (config.wheel_sides.size() != n || config.shoulder_signs.size() != n) {
+        throw std::invalid_argument(
+            "TraquadIK: wheel_sides and shoulder_signs must have one entry per wheel (" +
+            std::to_string(n) + ")"
+        );
     }
-    shoulder_signs_ = config.shoulder_signs;
-    shoulder_signs_.resize(sides_.size(), 0);
+    bool has_left = false, has_right = false;
+    for (size_t i = 0; i < n; i++) {
+        int side = config.wheel_sides[i];
+        int sigma = config.shoulder_signs[i];
+        if ((side != 1 && side != -1) || (sigma != 1 && sigma != -1))
+            throw std::invalid_argument("TraquadIK: wheel_sides and shoulder_signs must be +1 or -1");
+        has_left |= side == 1;
+        has_right |= side == -1;
+    }
+    if (!has_left || !has_right)
+        throw std::invalid_argument("TraquadIK needs at least one wheel per side");
 
     wheel_rad_ = config.wheel_rad;
     track_width_ = config.track_width;
+    sides_ = config.wheel_sides;
+    shoulder_signs_ = config.shoulder_signs;
     leg_length_ = config.leg_length;
     shoulder_coupling_ = config.shoulder_coupling;
-    q_.assign(sides_.size(), 0.0);
-    qd_.assign(sides_.size(), 0.0);
+    q_.assign(n, 0.0);
+    qd_.assign(n, 0.0);
 }
 
-void DifferentialIK::set_leg_state(const std::vector<double>& q, const std::vector<double>& qd)
+void TraquadIK::set_leg_state(const std::vector<double>& q, const std::vector<double>& qd)
 {
-    if (q.size() != q_.size() || qd.size() != qd_.size()) {
-        throw std::invalid_argument("DifferentialIK: leg state size must match wheel count");
-    }
+    if (q.size() != q_.size() || qd.size() != qd_.size())
+        throw std::invalid_argument("TraquadIK: leg state size must match wheel count");
     q_ = q;
     qd_ = qd;
 }
 
-double DifferentialIK::shoulder_term(size_t i) const
+double TraquadIK::shoulder_term(size_t i) const
 {
-    if (leg_length_ <= 0.0 || shoulder_signs_[i] == 0)
-        return 0.0;
     double alpha = shoulder_signs_[i] * q_[i];
     return (leg_length_ * std::sin(alpha) / wheel_rad_ + shoulder_coupling_) * qd_[i];
 }
 
-std::vector<double> DifferentialIK::inverse(double vx, double /*vy*/, double omega) const
+std::vector<double> TraquadIK::inverse(double vx, double /*vy*/, double omega) const
 {
     // Right wheels spin the other way for forward motion (side = −1)
     std::vector<double> wheel_vels(sides_.size());
@@ -156,7 +174,7 @@ std::vector<double> DifferentialIK::inverse(double vx, double /*vy*/, double ome
     return wheel_vels;
 }
 
-std::array<double, 3> DifferentialIK::forward(const std::vector<double>& wheel_velocities) const
+std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_velocities) const
 {
     // Ground speed of each track, averaged per side
     double v_left = 0.0, v_right = 0.0;
@@ -186,11 +204,14 @@ std::unique_ptr<WheelIK> create_wheel_ik(const std::string& type)
         return std::make_unique<MecanumIK>();
     } else if (type == "differential") {
         return std::make_unique<DifferentialIK>();
+    } else if (type == "traquad") {
+        return std::make_unique<TraquadIK>();
     } else if (type == "none") {
         return nullptr;
     }
     throw std::invalid_argument(
-        "Unknown wheel IK type: '" + type + "'. Use 'mecanum', 'differential', or 'none'."
+        "Unknown wheel IK type: '" + type +
+        "'. Use 'mecanum', 'differential', 'traquad', or 'none'."
     );
 }
 

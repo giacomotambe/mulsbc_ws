@@ -10,18 +10,18 @@ It:
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `wheel_joints.<POS>` | `string` or `string[]` | `""` / `[]` | Wheel joint name(s) per position. Mecanum: `LF`, `LH`, `RF`, `RH` (single string each). Differential: `LEFT`, `RIGHT` (string array each — supports multiple wheels per side for skid-steer). |
+| `wheel_joints.<POS>` | `string` or `string[]` | `""` / `[]` | Wheel joint name(s) per position. Mecanum: `LF`, `LH`, `RF`, `RH` (single string each). Differential / traquad: `LEFT`, `RIGHT` (string array each — supports multiple wheels per side for skid-steer). |
 | `joints` | `string[]` | `[]` | Joint names — legs, arms, etc. (must match URDF) |
 | `distributor_names` | `string[]` | `[]` | Power distributor names |
 | `second_encoder_joints` | `string[]` | `[]` | Joints with secondary encoders |
-| `feet_type` | `string` | `"none"` | Wheel IK type: `"mecanum"`, `"differential"`, or `"none"` |
+| `feet_type` | `string` | `"none"` | Wheel IK type: `"mecanum"`, `"differential"`, `"traquad"`, or `"none"` |
 | `wheel_rad` | `double` | `0.05` | Wheel radius [m] |
 | `driveshaft_x` | `double` | `0.235` | Longitudinal offset from base center to wheel [m] |
 | `driveshaft_y` | `double` | `0.188` | Lateral offset from base center to wheel [m] |
 | `mecanum_angle` | `double` | `135.0` | Mecanum roller angle [deg] (mecanum IK only) |
-| `track_width` | `double` | `0.4` | Track width [m] (differential IK only) |
-| `track_legs.leg_length` | `double` | `0.0` | Tracked legs: HFE → ankle length [m]; 0 disables shoulder compensation (differential IK only) |
-| `track_legs.shoulder_coupling` | `double` | `1.0` | Tracked legs: 1 = wheel encoder relative to the leg, 0 = relative to the body |
+| `track_width` | `double` | `0.4` | Track width [m] (differential / traquad IK only) |
+| `traquad.leg_length` | `double` | `0.19` | HFE → ankle length [m] (traquad IK only) |
+| `traquad.shoulder_coupling` | `double` | `1.0` | 1 = wheel encoder relative to the leg, 0 = relative to the body (traquad IK only) |
 | `input_frequency` | `int` | `100` | Expected twist command rate [Hz] (sets deadline QoS) |
 | `BestEffort_QOS` | `bool` | `true` | Use BestEffort (true) or Reliable (false) QoS for twist subscriber |
 | `sim` | `bool` | `false` | Simulation mode (velocity-only command interfaces) |
@@ -100,8 +100,8 @@ transition_wheels:
 ## Wheel IK Types
 
 - **`mecanum`**: 4-wheel mecanum inverse kinematics (LF, LH, RF, RH). Requires `wheel_joints.{LF,LH,RF,RH}`, `driveshaft_x`, `driveshaft_y`, `mecanum_angle`, `wheel_rad`.
-- **`differential`**: Differential drive with 1 or more wheels per side. Requires `wheel_joints.{LEFT,RIGHT}` (string arrays), `track_width`, `wheel_rad`. Each wheel gets its own velocity; with still shoulders all wheels on the same side get the same one. Odometry averages the track ground speeds per side.
-  With `track_legs.leg_length > 0` (traquad), each wheel is paired with the HFE joint of the same leg (`LF_WHEEL` → `LF_HFE`) and the IK compensates the shoulder motion: `ω_i = (κ_i·vx − track_width/2·ωz)/r − (leg_length·sin α_i/r + shoulder_coupling)·q̇_i`, with κ = +1 left / −1 right and α = σ·q_HFE (σ = κ for front legs, −κ for hind legs).
+- **`differential`**: Differential drive with 1 or more wheels per side. Requires `wheel_joints.{LEFT,RIGHT}` (string arrays), `track_width`, `wheel_rad`. All wheels on the same side receive the same velocity. Odometry averages wheel velocities per side.
+- **`traquad`**: Skid-steer on tracked legs (traquad). Same `wheel_joints.{LEFT,RIGHT}` as `differential`, plus the leg joints: each wheel is paired with the HFE joint of the same leg (`LF_WHEEL` → `LF_HFE`) and gets its own velocity, compensating the shoulder motion: `ω_i = (κ_i·vx − track_width/2·ωz)/r − (traquad.leg_length·sin α_i/r + traquad.shoulder_coupling)·q̇_i`, with κ = +1 left / −1 right and α = σ·q_HFE (σ = κ for front legs, −κ for hind legs). With still shoulders it equals `differential`. Odometry uses the same model.
 - **`none`**: No IK. Wheel joints still get zero commands when INACTIVE but receive no IK output when ACTIVE (useful for direct joint control via `joints`).
 
 ## Example Config
