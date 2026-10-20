@@ -18,8 +18,9 @@ struct WheelIKConfig {
     // Traquad only (see TraquadIK)
     std::vector<int> wheel_sides;    // per wheel: +1 left, −1 right
     std::vector<int> shoulder_signs; // per wheel: σ of its leg, α = σ·q_HFE (α > 0 = leg down)
+    double shoulder_x = 0.235;       // |x| of the HFE axes from the base center [m]
     double leg_length = 0.19;        // HFE → ankle [m]
-    double shoulder_coupling = 1.0;  // c: 1 = wheel encoder relative to the leg, 0 = to the body
+    double yaw_slip_gain = 0.0;      // γ: effective track width growth with the track spread
 };
 
 class WheelIK {
@@ -37,8 +38,8 @@ public:
 
     virtual size_t num_wheels() const = 0;
 
-    /// Shoulder (HFE) angle and velocity of the leg carrying each wheel. Ignored by default.
-    virtual void set_leg_state(const std::vector<double>& /*q*/, const std::vector<double>& /*qd*/) {}
+    /// Shoulder (HFE) angle of the leg carrying each wheel. Ignored by default.
+    virtual void set_leg_state(const std::vector<double>& /*q*/) {}
 };
 
 /// 4-wheel mecanum IK (ported from omni_vel_controller)
@@ -74,11 +75,15 @@ private:
 /// Traquad IK: skid-steer on tracked legs, one velocity per wheel.
 ///
 /// Each track hangs from a passive ankle at the end of a leg rotating about the HFE axis
-/// and lies flat on the ground. With α = σ·q_HFE and κ = wheel side:
+/// and lies flat on the ground. The shoulder angles move the tracks only along x, so
+/// without slip they do not change the wheel speeds. They change how much the tracks skid
+/// when turning: the farther apart front and hind tracks are, the less the robot turns.
+/// This is compensated with an effective half track width
 ///
-///   ω_i = (κ_i·vx − (track_width/2)·ωz) / r − (leg_length·sin α_i / r + c)·q̇_i
+///   y_eff = (track_width/2)·(1 + γ·(X̄/(track_width/2))²),   X̄ = mean_i(shoulder_x + leg_length·cos α_i)
+///   ω_i   = (κ_i·vx − y_eff·ωz) / r
 ///
-/// With still shoulders (q̇ = 0) this equals DifferentialIK.
+/// with α = σ·q_HFE and κ = wheel side. With γ = 0 this equals DifferentialIK.
 class TraquadIK: public WheelIK {
 public:
     void
@@ -88,19 +93,20 @@ public:
     std::array<double, 3> forward(const std::vector<double>& wheel_velocities) const override;
     size_t num_wheels() const override { return sides_.size(); }
 
-    void set_leg_state(const std::vector<double>& q, const std::vector<double>& qd) override;
+    void set_leg_state(const std::vector<double>& q) override;
+
+    /// Effective half track width for the current shoulder angles [m]
+    double effective_half_track() const { return y_eff_; }
 
 private:
-    /// Shoulder-motion term of wheel i [rad/s]: (leg_length·sin α / r + c)·q̇
-    double shoulder_term(size_t i) const;
-
     double wheel_rad_ = 0.05;
-    double track_width_ = 0.4;
+    double half_track_ = 0.2;
     std::vector<int> sides_;
     std::vector<int> shoulder_signs_;
+    double shoulder_x_ = 0.235;
     double leg_length_ = 0.19;
-    double shoulder_coupling_ = 1.0;
-    std::vector<double> q_, qd_;
+    double yaw_slip_gain_ = 0.0;
+    double y_eff_ = 0.2;
 };
 
 /// Factory: create WheelIK by name ("mecanum", "differential", "traquad")

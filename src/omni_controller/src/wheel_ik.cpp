@@ -138,39 +138,38 @@ void TraquadIK::configure(const WheelIKConfig& config, const std::vector<std::st
     }
     if (!has_left || !has_right)
         throw std::invalid_argument("TraquadIK needs at least one wheel per side");
+    if (config.yaw_slip_gain < 0.0)
+        throw std::invalid_argument("TraquadIK: yaw_slip_gain must be >= 0");
 
     wheel_rad_ = config.wheel_rad;
-    track_width_ = config.track_width;
+    half_track_ = config.track_width / 2.0;
     sides_ = config.wheel_sides;
     shoulder_signs_ = config.shoulder_signs;
+    shoulder_x_ = config.shoulder_x;
     leg_length_ = config.leg_length;
-    shoulder_coupling_ = config.shoulder_coupling;
-    q_.assign(n, 0.0);
-    qd_.assign(n, 0.0);
+    yaw_slip_gain_ = config.yaw_slip_gain;
+    set_leg_state(std::vector<double>(n, 0.0));
 }
 
-void TraquadIK::set_leg_state(const std::vector<double>& q, const std::vector<double>& qd)
+void TraquadIK::set_leg_state(const std::vector<double>& q)
 {
-    if (q.size() != q_.size() || qd.size() != qd_.size())
+    if (q.size() != sides_.size())
         throw std::invalid_argument("TraquadIK: leg state size must match wheel count");
-    q_ = q;
-    qd_ = qd;
-}
-
-double TraquadIK::shoulder_term(size_t i) const
-{
-    double alpha = shoulder_signs_[i] * q_[i];
-    return (leg_length_ * std::sin(alpha) / wheel_rad_ + shoulder_coupling_) * qd_[i];
+    // Mean longitudinal distance of the tracks from the base center
+    double x_mean = 0.0;
+    for (size_t i = 0; i < q.size(); i++)
+        x_mean += shoulder_x_ + leg_length_ * std::cos(shoulder_signs_[i] * q[i]);
+    x_mean /= static_cast<double>(q.size());
+    double ratio = x_mean / half_track_;
+    y_eff_ = half_track_ * (1.0 + yaw_slip_gain_ * ratio * ratio);
 }
 
 std::vector<double> TraquadIK::inverse(double vx, double /*vy*/, double omega) const
 {
     // Right wheels spin the other way for forward motion (side = −1)
     std::vector<double> wheel_vels(sides_.size());
-    for (size_t i = 0; i < sides_.size(); i++) {
-        wheel_vels[i] =
-            (sides_[i] * vx - omega * track_width_ / 2.0) / wheel_rad_ - shoulder_term(i);
-    }
+    for (size_t i = 0; i < sides_.size(); i++)
+        wheel_vels[i] = (sides_[i] * vx - omega * y_eff_) / wheel_rad_;
     return wheel_vels;
 }
 
@@ -180,7 +179,7 @@ std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_veloci
     double v_left = 0.0, v_right = 0.0;
     int n_left = 0, n_right = 0;
     for (size_t i = 0; i < sides_.size(); i++) {
-        double v = sides_[i] * (wheel_velocities[i] + shoulder_term(i)) * wheel_rad_;
+        double v = sides_[i] * wheel_velocities[i] * wheel_rad_;
         if (sides_[i] > 0) {
             v_left += v;
             n_left++;
@@ -192,7 +191,7 @@ std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_veloci
     v_left /= n_left;
     v_right /= n_right;
     double vx = (v_left + v_right) / 2.0;
-    double omega = (v_right - v_left) / track_width_;
+    double omega = (v_right - v_left) / (2.0 * y_eff_);
     return {vx, 0.0, omega};
 }
 

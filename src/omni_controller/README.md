@@ -20,8 +20,9 @@ It:
 | `driveshaft_y` | `double` | `0.188` | Lateral offset from base center to wheel [m] |
 | `mecanum_angle` | `double` | `135.0` | Mecanum roller angle [deg] (mecanum IK only) |
 | `track_width` | `double` | `0.4` | Track width [m] (differential / traquad IK only) |
+| `traquad.shoulder_x` | `double` | `0.235` | \|x\| of the HFE axes from the base center [m] (traquad IK only) |
 | `traquad.leg_length` | `double` | `0.19` | HFE → ankle length [m] (traquad IK only) |
-| `traquad.shoulder_coupling` | `double` | `1.0` | 1 = wheel encoder relative to the leg, 0 = relative to the body (traquad IK only) |
+| `traquad.yaw_slip_gain` | `double` | `0.0` | γ: growth of the effective track width with the track spread (traquad IK only, 0 = differential) |
 | `input_frequency` | `int` | `100` | Expected twist command rate [Hz] (sets deadline QoS) |
 | `BestEffort_QOS` | `bool` | `true` | Use BestEffort (true) or Reliable (false) QoS for twist subscriber |
 | `sim` | `bool` | `false` | Simulation mode (velocity-only command interfaces) |
@@ -101,7 +102,7 @@ transition_wheels:
 
 - **`mecanum`**: 4-wheel mecanum inverse kinematics (LF, LH, RF, RH). Requires `wheel_joints.{LF,LH,RF,RH}`, `driveshaft_x`, `driveshaft_y`, `mecanum_angle`, `wheel_rad`.
 - **`differential`**: Differential drive with 1 or more wheels per side. Requires `wheel_joints.{LEFT,RIGHT}` (string arrays), `track_width`, `wheel_rad`. All wheels on the same side receive the same velocity. Odometry averages wheel velocities per side.
-- **`traquad`**: Skid-steer on tracked legs (traquad). Same `wheel_joints.{LEFT,RIGHT}` as `differential`, plus the leg joints: each wheel is paired with the HFE joint of the same leg (`LF_WHEEL` → `LF_HFE`) and gets its own velocity, compensating the shoulder motion: `ω_i = (κ_i·vx − track_width/2·ωz)/r − (traquad.leg_length·sin α_i/r + traquad.shoulder_coupling)·q̇_i`, with κ = +1 left / −1 right and α = σ·q_HFE (σ = κ for front legs, −κ for hind legs). With still shoulders it equals `differential`. Odometry uses the same model.
+- **`traquad`**: Skid-steer on tracked legs (traquad). Same `wheel_joints.{LEFT,RIGHT}` as `differential`, plus the leg joints: each wheel is paired with the HFE joint of the same leg (`LF_WHEEL` → `LF_HFE`). The shoulder angles move the tracks only along x, so without slip they do not change the wheel speeds; they change how much the tracks skid when turning. The IK uses an effective half track width from the measured shoulder angles: `y_eff = h·(1 + γ·(X̄/h)²)`, `h = track_width/2`, `X̄ = mean(shoulder_x + leg_length·cos α_i)`, α = σ·q_HFE (σ = +1 for LF/RH, −1 for LH/RF), and `ω_i = (κ_i·vx − y_eff·ωz)/r` (κ = +1 left, −1 right). With `traquad.yaw_slip_gain` (γ) = 0 it equals `differential`. Identify γ with `scripts/identify_yaw_slip.py`.
 - **`none`**: No IK. Wheel joints still get zero commands when INACTIVE but receive no IK output when ACTIVE (useful for direct joint control via `joints`).
 
 ## Example Config

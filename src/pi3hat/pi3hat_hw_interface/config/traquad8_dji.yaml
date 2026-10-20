@@ -161,8 +161,9 @@ omni_controller:
     feet_type: traquad # Wheel IK type: "mecanum", "differential", "traquad" (differential + shoulder joints), or "none"
     wheel_rad: 0.028 # Wheel radius [m]
     traquad: # feet_type: traquad only
+      shoulder_x: 0.235 # |x| of the HFE axes from the base center [m]
       leg_length: 0.19 # HFE → ankle [m]
-      shoulder_coupling: 1.0 # 1 = wheel encoder relative to the leg, 0 = relative to the body (to verify)
+      yaw_slip_gain: 0.0 # γ: effective track width growth with the track spread (0 = differential; identify with scripts/identify_yaw_slip.py)
     driveshaft_x: 0.235 # Longitudinal distance from base center to wheel [m]
     driveshaft_y: 0.188 # Lateral distance from base center to wheel [m]
     mecanum_angle: 135.0 # Mecanum roller angle [deg] (only used with feet_type: mecanum)

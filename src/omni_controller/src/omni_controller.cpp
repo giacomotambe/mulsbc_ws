@@ -42,8 +42,9 @@ CallbackReturn OmniController::on_init()
         auto_declare<double>("driveshaft_y", 0.188);
         auto_declare<double>("mecanum_angle", 135.0);
         auto_declare<double>("track_width", 0.4);
+        auto_declare<double>("traquad.shoulder_x", 0.235);
         auto_declare<double>("traquad.leg_length", 0.19);
-        auto_declare<double>("traquad.shoulder_coupling", 1.0);
+        auto_declare<double>("traquad.yaw_slip_gain", 0.0);
 
         // Communication
         auto_declare<int>("input_frequency", 100);
@@ -232,13 +233,14 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                     ik_config.shoulder_signs.push_back(wheel_sides[i] * (fh == 'F' ? 1 : -1));
                 }
                 ik_config.wheel_sides = wheel_sides;
+                ik_config.shoulder_x = get_node()->get_parameter("traquad.shoulder_x").as_double();
                 ik_config.leg_length = get_node()->get_parameter("traquad.leg_length").as_double();
-                ik_config.shoulder_coupling =
-                    get_node()->get_parameter("traquad.shoulder_coupling").as_double();
+                ik_config.yaw_slip_gain =
+                    get_node()->get_parameter("traquad.yaw_slip_gain").as_double();
                 RCLCPP_INFO(
                     get_node()->get_logger(),
-                    "Traquad IK: leg_length=%.3f m, shoulder_coupling=%.2f",
-                    ik_config.leg_length, ik_config.shoulder_coupling
+                    "Traquad IK: shoulder_x=%.3f m, leg_length=%.3f m, yaw_slip_gain=%.3f",
+                    ik_config.shoulder_x, ik_config.leg_length, ik_config.yaw_slip_gain
                 );
             }
 
@@ -1192,14 +1194,14 @@ void OmniController::write_wheel_commands()
 
 void OmniController::update_wheel_ik_leg_state()
 {
+    // Measured shoulder angles only: they set the effective track width, they do not
+    // feed any velocity back into the wheel commands
     if (wheel_hfe_.empty())
         return;
-    std::vector<double> q(wheel_hfe_.size()), qd(wheel_hfe_.size());
-    for (size_t i = 0; i < wheel_hfe_.size(); i++) {
+    std::vector<double> q(wheel_hfe_.size());
+    for (size_t i = 0; i < wheel_hfe_.size(); i++)
         q[i] = get_state(wheel_hfe_[i] + "/" + hardware_interface::HW_IF_POSITION);
-        qd[i] = get_state(wheel_hfe_[i] + "/" + hardware_interface::HW_IF_VELOCITY);
-    }
-    wheel_ik_->set_leg_state(q, qd);
+    wheel_ik_->set_leg_state(q);
 }
 
 void OmniController::write_direct_wheel_commands()
