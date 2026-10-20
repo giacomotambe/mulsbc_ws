@@ -144,13 +144,13 @@ omni_controller:
     activation_duration: 1.0 # [s] time to raise HFE joints during controller activation (0 disables)
     activation_hip_offset_deg: 7.5 # [deg] HFE offset raised during activation (applied to LF/LH/RF/RH_HFE)
     joint_targets:
-      LF_HFE: { q_rest: 0.0, q_stand: 1.2 }
+      LF_HFE: { q_rest: 0.0, q_stand: 1.6 }
       # LF_KFE: { q_rest: 0.0, q_stand: 1.8 }
-      LH_HFE: { q_rest: 0.0, q_stand: -1.2 }
+      LH_HFE: { q_rest: 0.0, q_stand: -1.6 }
       # LH_KFE: { q_rest: 0.0, q_stand: -1.8 }
-      RF_HFE: { q_rest: 0.0, q_stand: -1.2 }
+      RF_HFE: { q_rest: 0.0, q_stand: -1.6 }
       # RF_KFE: { q_rest: 0.0, q_stand: -1.8 }
-      RH_HFE: { q_rest: 0.0, q_stand: 1.2 }
+      RH_HFE: { q_rest: 0.0, q_stand: 1.6 }
       # RH_KFE: { q_rest: 0.0, q_stand: 1.8 }
     transition_wheels:
       mode: assist # "lock" = wheels braked during transitions (default); "assist" = tracks driven on STAND/REST
