@@ -20,7 +20,9 @@ Turn in place / along arcs with the joystick, then Ctrl+C to print the fit.
 import argparse
 import csv
 import math
+import signal
 import statistics
+import threading
 
 import rclpy
 from rclpy.node import Node
@@ -160,15 +162,27 @@ def main():
     p.add_argument('--csv', default='', help='optional file for the raw samples')
     args = p.parse_args()
 
-    rclpy.init()
+    # Own Ctrl+C handling: on Humble a SIGINT that lands inside take_message() surfaces as
+    # a RuntimeError instead of KeyboardInterrupt, which would skip the report
+    try:
+        from rclpy.signals import SignalHandlerOptions
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    except ImportError:
+        rclpy.init()
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+
     node = YawSlipIdentifier(args)
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    node.report()
-    node.destroy_node()
-    rclpy.try_shutdown()
+        while not stop.is_set() and rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.1)
+    except (KeyboardInterrupt, RuntimeError) as e:
+        if not stop.is_set():
+            print(f'Stopped: {e}')
+    finally:
+        node.report()
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
