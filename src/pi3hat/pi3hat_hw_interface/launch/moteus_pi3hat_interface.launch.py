@@ -12,6 +12,7 @@ from launch_ros.substitutions import FindPackageShare
 
 BAG_TOPICS = [
     '/events/write_split',
+    '/imu_sensor/imu',
     '/ik_controller/base_pose',
     '/joy',
     '/joy/set_feedback',
@@ -106,6 +107,12 @@ def generate_launch_description():
         arguments=['omni_controller'],
     )
 
+    imu_sensor_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['imu_sensor'],
+    )
+
     return LaunchDescription(
         [
             urdf_name_arg,
@@ -114,6 +121,7 @@ def generate_launch_description():
             control_node,
             state_broadcaster_spawner,
             omni_controller_spawner,
+            imu_sensor_spawner,
             OpaqueFunction(function=_setup_recording),
         ]
     )

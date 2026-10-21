@@ -40,6 +40,9 @@ class YawSlipIdentifier(Node):
         self.args = args
         self.h = args.track_width / 2.0
         self.wz_imu = None
+        self.n_imu = 0
+        self.n_joints = 0
+        self.n_slow = 0
         self.samples = []  # (alpha_mean, x_mean, y_true, wz_imu, dv)
         self.create_subscription(Imu, args.imu_topic, self.imu_cb, qos_profile_sensor_data)
         self.create_subscription(
@@ -52,8 +55,10 @@ class YawSlipIdentifier(Node):
 
     def imu_cb(self, msg):
         self.wz_imu = msg.angular_velocity.z
+        self.n_imu += 1
 
     def joints_cb(self, msg):
+        self.n_joints += 1
         if self.wz_imu is None:
             return
         idx = {name: i for i, name in enumerate(msg.name)}
@@ -70,6 +75,7 @@ class YawSlipIdentifier(Node):
         v_right = statistics.fmean(SIDE[l] * w[l] * r for l in LEGS if SIDE[l] < 0)
         dv = v_right - v_left
         if abs(self.wz_imu) < self.args.min_yaw_rate or abs(dv) < 1e-3:
+            self.n_slow += 1
             return
 
         alphas = [SIGMA[l] * q[l] for l in LEGS]
@@ -81,7 +87,15 @@ class YawSlipIdentifier(Node):
 
     def report(self):
         n = len(self.samples)
-        print(f'\n{n} turning samples (|ωz| > {self.args.min_yaw_rate} rad/s)')
+        print(f'\nReceived: {self.n_imu} IMU msgs on {self.args.imu_topic}, '
+              f'{self.n_joints} joints_state msgs on {self.args.joints_topic}')
+        if self.n_imu == 0:
+            print('No IMU data: is the IMU broadcaster running? '
+                  '(ros2 run controller_manager spawner imu_sensor)')
+        if self.n_joints == 0:
+            print('No joints_state: is omni_controller active?')
+        print(f'{n} turning samples (|ωz| > {self.args.min_yaw_rate} rad/s), '
+              f'{self.n_slow} discarded as too slow')
         if n < 50:
             print('Too few samples: turn longer (a few seconds per direction and speed).')
             return
