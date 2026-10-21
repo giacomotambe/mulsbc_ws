@@ -26,6 +26,7 @@ BAG_TOPICS = [
     '/omni_controller/safety_state',
     '/omni_controller/transition_event',
     '/omni_controller/twist_cmd',
+    '/omni_mulinex_joystick/identification/segment',
     '/state_broadcaster/joints_state',
     '/state_broadcaster/performance_indexes',
     '/state_broadcaster/transition_event',
