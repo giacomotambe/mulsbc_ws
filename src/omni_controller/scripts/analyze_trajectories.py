@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Identification missions t1-t3 (NUC joystick, START): measured motion of the robot from the Qualisys, per segment.
+"""Identification missions t1-t3 (NUC joystick, ○; one or several in a row): measured motion of the robot from the
+Qualisys, per segment.
 
 Inputs: the robot bag (moteus_pi3hat_interface.launch.py record_bag:=true) and the Qualisys bag (/rigid_bodies). The Qualisys bag can come
 from another computer: its clock is aligned to the robot by cross-correlating the yaw rate of the IMU with the yaw
@@ -271,7 +272,7 @@ def analyse(robot, mc, imu_sign, h):
     rows = []
     for t0, t1, info in segments(robot):
         name = info['segment']
-        if name in ('move', 'stop') or info.get('hips_moving'):
+        if name in ('move', 'stop', 'pause') or info.get('hips_moving'):
             continue
         a, b = t0 + SKIP, t1 - 0.2
         if b - a < 1.0:
