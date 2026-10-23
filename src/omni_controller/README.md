@@ -20,9 +20,14 @@ It:
 | `driveshaft_y` | `double` | `0.188` | Lateral offset from base center to wheel [m] |
 | `mecanum_angle` | `double` | `135.0` | Mecanum roller angle [deg] (mecanum IK only) |
 | `track_width` | `double` | `0.4` | Track width [m] (differential / traquad IK only) |
-| `traquad.yaw_half_track` | `double` | `0.0` | y0: effective half track standing [m] (traquad IK only, 0 = `track_width/2`) |
+| `traquad.shoulder_x` | `double` | `0.235` | \|x\| of the HFE axes from the base center [m] (traquad IK only) |
+| `traquad.leg_length` | `double` | `0.19` | HFE → ankle length [m] (traquad IK only) |
+| `traquad.yaw_slip_gain` | `double` | `0.0` | γ: growth of the effective half track with the track spread X̄ |
 | `traquad.yaw_posture_gain` | `double` | `0.0` | kδ: decrease of the effective half track per rad of common HFE offset [m/rad] |
-| `traquad.spin_forward_drift` | `double` | `0.0` | d: forward drift per rad/s of yaw rate [m/rad] |
+| `traquad.creep.{gain,x0,posture}` | `double` | `0, 0, 0` | forward creep while turning, d = max(gain·(X̄ − x0) − posture·\|δ\|, 0) [m/rad] |
+| `wheel_compensation.enabled` | `bool` | `false` | per-wheel velocity compensation sent as feedforward torque (effort): wheel friction + integral of the wheel's own velocity error |
+| `wheel_compensation.{friction,viscous,fade}` | `double` | `0, 0, 1` | feedforward τ = sign(ω_cmd)·(friction + viscous·\|ω_cmd\|) [N m], faded to 0 below \|ω_cmd\| = fade [rad/s] |
+| `wheel_compensation.{ki,i_max}` | `double` | `0, 0` | integral ki·∫(ω_cmd − ω)dt [N m/rad], limited to ±i_max [N m]; restarts when the wheels are not driven |
 | `traquad.deficit_compensation.enabled` | `bool` | `false` | raise the track commands by the deficit of the drives (Kd only) |
 | `traquad.deficit_compensation.{base,speed,turn,side,fade}` | `double` | `0, 0, 0, 0, 1` | Δ = base + speed·\|ω\| + load·(turn ± side) [rad/s], faded below \|ω\| = fade |
 | `input_frequency` | `int` | `100` | Expected twist command rate [Hz] (sets deadline QoS) |
@@ -104,7 +109,7 @@ transition_wheels:
 
 - **`mecanum`**: 4-wheel mecanum inverse kinematics (LF, LH, RF, RH). Requires `wheel_joints.{LF,LH,RF,RH}`, `driveshaft_x`, `driveshaft_y`, `mecanum_angle`, `wheel_rad`.
 - **`differential`**: Differential drive with 1 or more wheels per side. Requires `wheel_joints.{LEFT,RIGHT}` (string arrays), `track_width`, `wheel_rad`. All wheels on the same side receive the same velocity. Odometry averages wheel velocities per side.
-- **`traquad`**: Skid-steer on tracked legs (traquad). Same `wheel_joints.{LEFT,RIGHT}` as `differential`, plus the leg joints: each wheel is paired with the HFE joint of the same leg (`LF_WHEEL` → `LF_HFE`). The tracks skid when turning, so the robot turns as a differential drive with an effective half track `y_eff = max(y0 − kδ·|δ|, track_width/2)`, where δ is the mean of the measured HFE angles (the yaw posture of R2, the compliant IK mode and the passive yield lowers it), and it creeps forward by `d·|ωz|` while turning: `vx' = vx − d·|ωz|`, `V_L,R = vx' ∓ y_eff·ωz`, `ω_i = κ_i·V/r` (κ = +1 left, −1 right). With the deficit compensation each track command is also raised along its direction by Δ (load 0 straight, 1 turning in place; + outer, − inner track of the turn). With all of them 0 it equals `differential`. The traquad8_dji.yaml values were fitted with the Qualisys (2026-10-22).
+- **`traquad`**: Skid-steer on tracked legs (traquad). Same `wheel_joints.{LEFT,RIGHT}` as `differential`, plus the leg joints: each wheel is paired with the HFE joint of the same leg (`LF_WHEEL` → `LF_HFE`), whose measured angles set the IK (α = σ·q_HFE, σ = +1 for LF/RH, −1 for LH/RF). The tracks skid when turning, so the robot turns as a differential drive with an effective half track `y_eff = max(h·(1 + γ·(X̄/h)²) − kδ·|δ|, h)`, `h = track_width/2`, `X̄ = mean(shoulder_x + leg_length·cos α_i)` (the more the tracks are spread out, the more they skid), δ = mean of the HFE angles (the yaw posture of R2, the compliant IK mode and the passive yield lowers it). It also creeps forward by `d·|ωz|` while turning, `d = max(gain·(X̄ − x0) − posture·|δ|, 0)`: `vx' = vx − d·|ωz|`, `V_L,R = vx' ∓ y_eff·ωz`, `ω_i = κ_i·V/r` (κ = +1 left, −1 right). With the deficit compensation each track command is also raised along its direction by Δ (load 0 straight, 1 turning in place; + outer, − inner track of the turn). With all of them 0 it equals `differential`. The traquad8_dji.yaml values were fitted with the Qualisys (2026-10-22).
 - **`none`**: No IK. Wheel joints still get zero commands when INACTIVE but receive no IK output when ACTIVE (useful for direct joint control via `joints`).
 
 ## Example Config

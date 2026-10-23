@@ -42,9 +42,21 @@ CallbackReturn OmniController::on_init()
         auto_declare<double>("driveshaft_y", 0.188);
         auto_declare<double>("mecanum_angle", 135.0);
         auto_declare<double>("track_width", 0.4);
-        auto_declare<double>("traquad.yaw_half_track", 0.0);
+        auto_declare<double>("traquad.shoulder_x", 0.235);
+        auto_declare<double>("traquad.leg_length", 0.19);
+        auto_declare<double>("traquad.yaw_slip_gain", 0.0);
         auto_declare<double>("traquad.yaw_posture_gain", 0.0);
-        auto_declare<double>("traquad.spin_forward_drift", 0.0);
+        auto_declare<double>("traquad.creep.gain", 0.0);
+        auto_declare<double>("traquad.creep.x0", 0.0);
+        auto_declare<double>("traquad.creep.posture", 0.0);
+        auto_declare<double>("traquad.min_track_speed", 0.0);
+        auto_declare<double>("traquad.min_track_hysteresis", 0.5);
+        auto_declare<bool>("wheel_compensation.enabled", false);
+        auto_declare<double>("wheel_compensation.friction", 0.0);
+        auto_declare<double>("wheel_compensation.viscous", 0.0);
+        auto_declare<double>("wheel_compensation.fade", 1.0);
+        auto_declare<double>("wheel_compensation.ki", 0.0);
+        auto_declare<double>("wheel_compensation.i_max", 0.0);
         auto_declare<bool>("traquad.deficit_compensation.enabled", false);
         auto_declare<double>("traquad.deficit_compensation.base", 0.0);
         auto_declare<double>("traquad.deficit_compensation.speed", 0.0);
@@ -213,7 +225,8 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
             ik_config.track_width = get_node()->get_parameter("track_width").as_double();
 
             // Traquad: pair each wheel with the HFE joint of the same leg (LF_WHEEL → LF_HFE),
-            // whose measured angles give the yaw posture of the IK
+            // whose measured angles set the IK; σ = side · (+1 front, −1 hind) from the leg
+            // prefix (LF, LH, RF, RH)
             wheel_hfe_.clear();
             if (feet_type == "traquad") {
                 for (size_t i = 0; i < wheel_groups_.size(); i++) {
@@ -236,14 +249,21 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                         return CallbackReturn::ERROR;
                     }
                     wheel_hfe_.push_back(hfe);
+                    ik_config.shoulder_signs.push_back(wheel_sides[i] * (fh == 'F' ? 1 : -1));
                 }
                 auto param = [this](const std::string& name) {
                     return get_node()->get_parameter("traquad." + name).as_double();
                 };
                 ik_config.wheel_sides = wheel_sides;
-                ik_config.yaw_half_track = param("yaw_half_track");
+                ik_config.shoulder_x = param("shoulder_x");
+                ik_config.leg_length = param("leg_length");
+                ik_config.yaw_slip_gain = param("yaw_slip_gain");
                 ik_config.yaw_posture_gain = param("yaw_posture_gain");
-                ik_config.spin_forward_drift = param("spin_forward_drift");
+                ik_config.creep_gain = param("creep.gain");
+                ik_config.creep_x0 = param("creep.x0");
+                ik_config.creep_posture = param("creep.posture");
+                ik_config.min_track_speed = param("min_track_speed");
+                ik_config.min_track_hysteresis = param("min_track_hysteresis");
                 ik_config.deficit_compensation =
                     get_node()->get_parameter("traquad.deficit_compensation.enabled").as_bool();
                 ik_config.deficit_base = param("deficit_compensation.base");
@@ -253,10 +273,11 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                 ik_config.deficit_fade = param("deficit_compensation.fade");
                 RCLCPP_INFO(
                     get_node()->get_logger(),
-                    "Traquad IK: yaw_half_track=%.3f m, yaw_posture_gain=%.3f m/rad, "
-                    "spin_forward_drift=%.3f m/rad, deficit compensation %s",
-                    ik_config.yaw_half_track, ik_config.yaw_posture_gain,
-                    ik_config.spin_forward_drift, ik_config.deficit_compensation ? "ON" : "OFF"
+                    "Traquad IK: yaw_slip_gain=%.3f, yaw_posture_gain=%.3f m/rad, creep %.2f·(X̄ − %.3f) "
+                    "− %.3f·|δ| m/rad, deficit compensation %s",
+                    ik_config.yaw_slip_gain, ik_config.yaw_posture_gain, ik_config.creep_gain,
+                    ik_config.creep_x0, ik_config.creep_posture,
+                    ik_config.deficit_compensation ? "ON" : "OFF"
                 );
             }
 
@@ -287,6 +308,33 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
         leg_kp_cmd_[jnt] = 1.0;
         leg_kd_cmd_[jnt] = 1.0;
     }
+
+    // ── Wheel velocity compensation ─────────────────────────────────────
+    wheel_comp_.enabled = get_node()->get_parameter("wheel_compensation.enabled").as_bool();
+    wheel_comp_.friction = get_node()->get_parameter("wheel_compensation.friction").as_double();
+    wheel_comp_.viscous = get_node()->get_parameter("wheel_compensation.viscous").as_double();
+    wheel_comp_.fade = get_node()->get_parameter("wheel_compensation.fade").as_double();
+    wheel_comp_.ki = get_node()->get_parameter("wheel_compensation.ki").as_double();
+    wheel_comp_.i_max = get_node()->get_parameter("wheel_compensation.i_max").as_double();
+    if (wheel_comp_.fade <= 0.0 || wheel_comp_.i_max < 0.0 || wheel_comp_.ki < 0.0) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(), "wheel_compensation: fade must be > 0, ki and i_max >= 0"
+        );
+        return CallbackReturn::ERROR;
+    }
+    wheel_integral_.clear();
+    wheel_comp_cycle_.clear();
+    for (const auto& jnt : wheel_joints_) {   // no allocation in the realtime loop
+        wheel_integral_[jnt] = 0.0;
+        wheel_comp_cycle_[jnt] = 0;
+    }
+    if (wheel_comp_.enabled)
+        RCLCPP_INFO(
+            get_node()->get_logger(),
+            "Wheel compensation ON: friction %.3f N m + %.4f N m s/rad (faded below %.2f rad/s), "
+            "integral ki %.2f N m/rad up to %.2f N m",
+            wheel_comp_.friction, wheel_comp_.viscous, wheel_comp_.fade, wheel_comp_.ki, wheel_comp_.i_max
+        );
 
     // ── Wheel mode ──────────────────────────────────────────────────────
     std::string wheel_mode_str = get_node()->get_parameter("wheel_mode").as_string();
@@ -782,8 +830,11 @@ controller_interface::InterfaceConfiguration OmniController::state_interface_con
 // ═══════════════════════════════════════════════════════════════════════════
 
 controller_interface::return_type
-OmniController::update(const rclcpp::Time& time, const rclcpp::Duration&)
+OmniController::update(const rclcpp::Time& time, const rclcpp::Duration& period)
 {
+    update_cycle_++;
+    update_dt_ = std::clamp(period.seconds(), 1e-4, 0.02);
+
     // Phase 1: Read and publish state
     publish_joint_states(time);
     if (!sim_flag_ && pub_performance_ && per_pub_)
@@ -1200,7 +1251,10 @@ void OmniController::write_wheel_commands()
             set_command(jnt + "/" + hardware_interface::HW_IF_VELOCITY, wheel_vels[g]);
             if (!sim_flag_) {
                 set_command(jnt + "/" + hardware_interface::HW_IF_POSITION, std::nan("1"));
-                set_command(jnt + "/" + hardware_interface::HW_IF_EFFORT, 0.0);
+                set_command(
+                    jnt + "/" + hardware_interface::HW_IF_EFFORT,
+                    wheel_compensation_effort(jnt, wheel_vels[g])
+                );
                 set_command(jnt + "/" + hw_if::KP_SCALE, 0.0);
                 set_command(jnt + "/" + hw_if::KD_SCALE, 1.0);
             }
@@ -1226,11 +1280,36 @@ void OmniController::write_direct_wheel_commands()
         set_command(jnt + "/" + hardware_interface::HW_IF_VELOCITY, direct_wheel_vel_cmd_[jnt]);
         if (!sim_flag_) {
             set_command(jnt + "/" + hardware_interface::HW_IF_POSITION, std::nan("1"));
-            set_command(jnt + "/" + hardware_interface::HW_IF_EFFORT, 0.0);
+            set_command(
+                jnt + "/" + hardware_interface::HW_IF_EFFORT,
+                wheel_compensation_effort(jnt, direct_wheel_vel_cmd_[jnt])
+            );
             set_command(jnt + "/" + hw_if::KP_SCALE, direct_wheel_kp_cmd_[jnt]);
             set_command(jnt + "/" + hw_if::KD_SCALE, direct_wheel_kd_cmd_[jnt]);
         }
     }
+}
+
+double OmniController::wheel_compensation_effort(const std::string& jnt, double velocity_cmd)
+{
+    if (!wheel_comp_.enabled)
+        return 0.0;
+    // The drives run a velocity loop with Kd only: the friction of the wheel leaves a speed
+    // error. Feedforward of the friction for the commanded speed (faded near zero, no torque
+    // flipping sign at standstill) plus an integral of this wheel's own velocity error.
+    double ff = std::copysign(wheel_comp_.friction + wheel_comp_.viscous * std::abs(velocity_cmd), velocity_cmd) *
+                std::min(std::abs(velocity_cmd) / wheel_comp_.fade, 1.0);
+    // the integral restarts when the wheels were not driven in the previous cycle
+    // (transitions, safety, other modes)
+    double& integral = wheel_integral_[jnt];
+    if (wheel_comp_cycle_[jnt] + 1 != update_cycle_)
+        integral = 0.0;
+    wheel_comp_cycle_[jnt] = update_cycle_;
+    double error = velocity_cmd - get_state(jnt + "/" + hardware_interface::HW_IF_VELOCITY);
+    integral = std::clamp(
+        integral + wheel_comp_.ki * error * update_dt_, -wheel_comp_.i_max, wheel_comp_.i_max
+    );
+    return ff + integral;
 }
 
 void OmniController::write_leg_commands()

@@ -2,6 +2,7 @@
 #define OMNI_CONTROLLER_HPP
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -201,6 +202,21 @@ private:
     std::map<std::string, double> direct_wheel_kp_cmd_;
     std::map<std::string, double> direct_wheel_kd_cmd_;
 
+    // Wheel velocity compensation (wheel_compensation.*): feedforward torque of the wheel friction
+    // and an integral of the velocity error, per wheel, from its own command and speed only
+    struct WheelCompensation {
+        bool enabled = false;
+        double friction = 0.0; // [N m] Coulomb friction torque
+        double viscous = 0.0;  // [N m s/rad]
+        double fade = 1.0;     // [rad/s] feedforward faded to 0 below this commanded speed
+        double ki = 0.0;       // [N m/rad] integral gain on the velocity error
+        double i_max = 0.0;    // [N m] integral torque limit (anti-windup)
+    } wheel_comp_;
+    std::map<std::string, double> wheel_integral_;     // [N m]
+    std::map<std::string, uint64_t> wheel_comp_cycle_; // last update cycle of each integral
+    uint64_t update_cycle_ = 0;
+    double update_dt_ = 0.002;                          // [s] period of the last update
+
     // Leg commands: per-joint buffered values
     std::map<std::string, double> leg_pos_cmd_;
     std::map<std::string, double> leg_vel_cmd_;
@@ -278,6 +294,8 @@ private:
     /// Traquad: pass the measured HFE angle of each wheel's leg to the IK.
     void update_wheel_ik_leg_state();
     void write_direct_wheel_commands();
+    /// Feedforward + integral torque of a wheel for its commanded speed (wheel_compensation)
+    double wheel_compensation_effort(const std::string& jnt, double velocity_cmd);
     void write_leg_commands();
     void zero_all_commands();
     void update_transition(const rclcpp::Time& time);

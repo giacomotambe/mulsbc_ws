@@ -122,28 +122,32 @@ std::array<double, 3> DifferentialIK::forward(const std::vector<double>& wheel_v
 void TraquadIK::configure(const WheelIKConfig& config, const std::vector<std::string>& wheel_names)
 {
     size_t n = wheel_names.size();
-    if (config.wheel_sides.size() != n) {
+    if (config.wheel_sides.size() != n || config.shoulder_signs.size() != n) {
         throw std::invalid_argument(
-            "TraquadIK: wheel_sides must have one entry per wheel (" + std::to_string(n) + ")"
+            "TraquadIK: wheel_sides and shoulder_signs must have one entry per wheel (" +
+            std::to_string(n) + ")"
         );
     }
     bool has_left = false, has_right = false;
-    for (int side : config.wheel_sides) {
-        if (side != 1 && side != -1)
-            throw std::invalid_argument("TraquadIK: wheel_sides must be +1 or -1");
+    for (size_t i = 0; i < n; i++) {
+        int side = config.wheel_sides[i];
+        int sigma = config.shoulder_signs[i];
+        if ((side != 1 && side != -1) || (sigma != 1 && sigma != -1))
+            throw std::invalid_argument("TraquadIK: wheel_sides and shoulder_signs must be +1 or -1");
         has_left |= side == 1;
         has_right |= side == -1;
     }
     if (!has_left || !has_right)
         throw std::invalid_argument("TraquadIK needs at least one wheel per side");
-    if (config.yaw_half_track < 0.0 || config.yaw_posture_gain < 0.0)
-        throw std::invalid_argument("TraquadIK: yaw_half_track and yaw_posture_gain must be >= 0");
+    if (config.yaw_slip_gain < 0.0 || config.yaw_posture_gain < 0.0)
+        throw std::invalid_argument("TraquadIK: yaw_slip_gain and yaw_posture_gain must be >= 0");
     if (config.deficit_fade <= 0.0)
         throw std::invalid_argument("TraquadIK: deficit_fade must be > 0");
+    if (config.min_track_speed < 0.0 || config.min_track_hysteresis < 0.0)
+        throw std::invalid_argument("TraquadIK: min_track_speed and min_track_hysteresis must be >= 0");
 
     config_ = config;
     half_track_ = config.track_width / 2.0;
-    y0_ = config.yaw_half_track > 0.0 ? config.yaw_half_track : half_track_;
     set_leg_state(std::vector<double>(n, 0.0));
 }
 
@@ -151,13 +155,24 @@ void TraquadIK::set_leg_state(const std::vector<double>& q)
 {
     if (q.size() != config_.wheel_sides.size())
         throw std::invalid_argument("TraquadIK: leg state size must match wheel count");
-    // Yaw posture: common offset of the HFE joints (the stand pose cancels, σ sums to 0)
-    double delta = 0.0;
-    for (double qi : q)
-        delta += qi;
-    delta /= static_cast<double>(q.size());
-    // never below the geometric half track (no skid at all)
-    y_eff_ = std::max(y0_ - config_.yaw_posture_gain * std::abs(delta), half_track_);
+    // Mean longitudinal distance of the tracks from the base center, and the yaw posture:
+    // common offset of the HFE joints (the stand pose cancels, σ sums to 0)
+    double x_mean = 0.0, delta = 0.0;
+    for (size_t i = 0; i < q.size(); i++) {
+        x_mean += config_.shoulder_x + config_.leg_length * std::cos(config_.shoulder_signs[i] * q[i]);
+        delta += q[i];
+    }
+    x_mean /= static_cast<double>(q.size());
+    delta = std::abs(delta) / static_cast<double>(q.size());
+    double ratio = x_mean / half_track_;
+    // never below the geometric half track (no skid at all), no backward creep
+    y_eff_ = std::max(
+        half_track_ * (1.0 + config_.yaw_slip_gain * ratio * ratio) - config_.yaw_posture_gain * delta,
+        half_track_
+    );
+    creep_ = std::max(
+        config_.creep_gain * (x_mean - config_.creep_x0) - config_.creep_posture * delta, 0.0
+    );
 }
 
 double TraquadIK::deficit(double omega, double load, bool outer) const
@@ -171,9 +186,11 @@ double TraquadIK::deficit(double omega, double load, bool outer) const
 std::vector<double> TraquadIK::inverse(double vx, double /*vy*/, double omega) const
 {
     // Belt speeds of the two sides (forward positive), forward drift while turning removed
-    double v = vx - config_.spin_forward_drift * std::abs(omega);
+    double v = vx - creep_ * std::abs(omega);
     double v_left = v - y_eff_ * omega;
     double v_right = v + y_eff_ * omega;
+    if (config_.min_track_speed > 0.0)
+        keep_inner_track_moving(vx, omega, v_left, v_right);
     double sum = std::abs(v_left + v_right), diff = std::abs(v_right - v_left);
     double load = sum + diff > 1e-9 ? 1.0 - sum / (sum + diff) : 0.0;
 
@@ -191,6 +208,35 @@ std::vector<double> TraquadIK::inverse(double vx, double /*vy*/, double omega) c
         wheel_vels[i] = sides[i] * w;
     }
     return wheel_vels;
+}
+
+void TraquadIK::keep_inner_track_moving(double vx, double omega, double& v_left, double& v_right) const
+{
+    const double v_min = config_.min_track_speed * config_.wheel_rad;
+    // arcs only: turning in place or creeping along is left alone
+    if (std::abs(vx) < v_min || std::abs(omega) < 1e-3) {
+        inner_sign_ = 0;
+        return;
+    }
+    bool left_inner = std::abs(v_left) < std::abs(v_right);
+    double& inner = left_inner ? v_left : v_right;
+    double& outer = left_inner ? v_right : v_left;
+    if (std::abs(inner) >= v_min) {
+        inner_sign_ = 0;
+        return;
+    }
+    // direction: the one the kinematics asks when entering the band (the direction of travel
+    // when it asks about zero), kept until it asks clearly for the other one (no chattering)
+    const double h = config_.min_track_hysteresis * config_.wheel_rad;
+    if (inner_sign_ == 0)
+        inner_sign_ = std::abs(inner) > h ? (inner > 0.0 ? 1 : -1) : (vx > 0.0 ? 1 : -1);
+    else if (inner > h)
+        inner_sign_ = 1;
+    else if (inner < -h)
+        inner_sign_ = -1;
+    const double target = inner_sign_ * v_min;
+    outer += target - inner;   // V_R − V_L unchanged: same yaw rate
+    inner = target;
 }
 
 std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_velocities) const
@@ -212,7 +258,7 @@ std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_veloci
     v_left /= n_left;
     v_right /= n_right;
     double omega = (v_right - v_left) / (2.0 * y_eff_);
-    double vx = (v_left + v_right) / 2.0 + config_.spin_forward_drift * std::abs(omega);
+    double vx = (v_left + v_right) / 2.0 + creep_ * std::abs(omega);
     return {vx, 0.0, omega};
 }
 

@@ -156,18 +156,46 @@ omni_controller:
       mode: assist # "lock" = wheels braked during transitions (default); "assist" = tracks driven on STAND/REST
       gain: 10.0 # k: ω_track = −k · q̇_HFE (same leg)
 
+    # Wheel velocity compensation, per track from its own command and speed only (effort = feedforward torque of
+    # the moteus): the track drives have Kd only (0.9 N m s/rad), so friction leaves a speed error Δ = τ / Kd
+    # (Qualisys 2026-10-22: 1.3 rad/s straight, 2.1 turning in place). τ = sign(ω_cmd)·(friction + viscous·|ω_cmd|)
+    # faded below |ω_cmd| = fade, plus ki·∫(ω_cmd − ω)dt limited to ±i_max (restarts when the tracks are not driven).
+    # Fitted per track: Δ = 1.675 + 0.019·|ω| → 1.51 + 0.017·|ω| N m; friction kept a bit lower, the integral
+    # (time constant Kd / ki = 0.3 s) covers the rest (turning, inner / outer track, floor). Keep
+    # traquad.deficit_compensation (in the IK) off with it
+    wheel_compensation:
+      enabled: true
+      friction: 1.4 # [N m]
+      viscous: 0.017 # [N m s/rad]
+      fade: 1.0 # [rad/s]
+      ki: 3.0 # [N m/rad]
+      i_max: 1.0 # [N m]
+
     # Wheel IK
     wheel_mode: ik # Wheel control mode: "ik" (twist → WheelIK) or "direct" (per-wheel velocity)
     feet_type: traquad # Wheel IK type: "mecanum", "differential", "traquad" (differential + shoulder joints), or "none"
     twist_max_x: 1.0 # [m/s] twist clamp (default 0.5): 22 rad/s at the tracks with wheel_rad 0.045, below their max_velocity 25 (traquad8_dji.xacro)
     wheel_rad: 0.045 # Track joint radius [m]: belt speed per rad/s of the track joint. Qualisys 2026-10-22: base speed / (joint speed x 0.028) = 1.61-1.63 on 7 straight runs, so 0.028 x 1.62 = 0.045
-    traquad: # feet_type: traquad only. Fitted with the Qualisys on three runs of 2026-10-22 (standing, joystick,
-      # R2 and compliant IK mode), leave-one-run-out: yaw rate error 3.9 % (median, was 7.3 % with γ·X̄), vx 1.7 cm/s
-      # A. kinematics: y_eff = max(yaw_half_track − yaw_posture_gain·|δ|, track_width/2), δ = mean q_HFE (measured);
-      #    vx' = vx − spin_forward_drift·|ωz|;  V_L,R = vx' ∓ y_eff·ωz;  ω_i = κ_i·V / wheel_rad
-      yaw_half_track: 0.556 # y0 [m]: effective half track standing (real 0.537 turning in place at |δ| < 0.05)
-      yaw_posture_gain: 0.302 # kδ [m/rad]: yaw posture lowers y_eff (real 0.454 at |δ| 0.25-0.45, R2 / IK mode)
-      spin_forward_drift: 0.066 # d [m/rad]: the robot creeps forward by d·|ωz| while turning, either way
+    traquad: # feet_type: traquad only. Fitted with the Qualisys on 2026-10-22: joystick runs (standing, R2, compliant IK
+      # mode) and the t1-t3 missions (shoulders 1.05-1.85), leave-one-run-out yaw rate error about 5 % (median)
+      # A. kinematics, from the measured shoulder angles (α = σ·q_HFE, δ = mean q_HFE):
+      #    X̄ = mean(shoulder_x + leg_length·cos α_i);  y_eff = max(h·(1 + γ·(X̄/h)²) − kδ·|δ|, h), h = track_width/2
+      #    d = max(creep.gain·(X̄ − creep.x0) − creep.posture·|δ|, 0);  vx' = vx − d·|ωz|;  V_L,R = vx' ∓ y_eff·ωz
+      #    real y_eff turning in place: 0.96 / 0.84 / 0.56 / 0.40 m at α 1.05 / 1.3 / 1.6 / 1.85, 0.45 with R2 (δ 0.3)
+      shoulder_x: 0.235 # |x| of the HFE axes from the base center [m]
+      leg_length: 0.19 # HFE → ankle [m]
+      yaw_slip_gain: 1.35 # γ
+      yaw_posture_gain: 0.29 # kδ [m/rad], from the R2 runs (0.22 with the compliant IK mode too)
+      # Arcs with radius ≈ y_eff ask the inner track ~0: it pivots and the ground can roll it over its ankle
+      # (2026-10-23: inner track still at R 0.45-0.65 m). While driving and turning it is held at ±min_track_speed
+      # (direction kept until the kinematics asks for the other one past the hysteresis), the outer track takes the
+      # difference: exact yaw rate, slightly faster forward speed. 0 = off
+      min_track_speed: 1.5 # [rad/s] (6.8 cm/s of belt)
+      min_track_hysteresis: 0.5 # [rad/s]
+      creep: # measured d: 0.255 / 0.180 / 0.075 / 0.019 m/rad at α 1.05 / 1.3 / 1.6 / 1.85, about 30 % less with R2
+        gain: 1.6 # [1/rad]
+        x0: 0.171 # [m]
+        posture: 0.09 # [m/rad²]
       # B. track deficit: the drives (Kd only) run Δ slower than commanded; each command is raised by
       #    Δ = base + speed·|ω| + load·(turn ± side) [rad/s], + outer / − inner track, load 0 straight .. 1 turning
       #    in place (measured: straight 1.2-1.5, arc inner 1.0, arc outer 1.7-1.9, spin 2.0-2.3; CV rms 0.39)
