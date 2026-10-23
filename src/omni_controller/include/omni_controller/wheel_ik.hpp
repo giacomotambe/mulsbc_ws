@@ -16,11 +16,17 @@ struct WheelIKConfig {
     double track_width = 0.4;
 
     // Traquad only (see TraquadIK)
-    std::vector<int> wheel_sides;    // per wheel: +1 left, −1 right
-    std::vector<int> shoulder_signs; // per wheel: σ of its leg, α = σ·q_HFE (α > 0 = leg down)
-    double shoulder_x = 0.235;       // |x| of the HFE axes from the base center [m]
-    double leg_length = 0.19;        // HFE → ankle [m]
-    double yaw_slip_gain = 0.0;      // γ: effective track width growth with the track spread
+    std::vector<int> wheel_sides;     // per wheel: +1 left, −1 right
+    double yaw_half_track = 0.0;      // y0: effective half track standing [m] (0 = track_width/2)
+    double yaw_posture_gain = 0.0;    // kδ: y_eff decrease per rad of common HFE offset [m/rad]
+    double spin_forward_drift = 0.0;  // d: forward drift per rad/s of yaw rate [m/rad]
+    // Track deficit compensation (B): Δ = base + speed·|ω| + load·(turn ± side) [rad/s]
+    bool deficit_compensation = false;
+    double deficit_base = 0.0;
+    double deficit_speed = 0.0;
+    double deficit_turn = 0.0;
+    double deficit_side = 0.0;        // + outer track of the turn, − inner one
+    double deficit_fade = 1.0;        // [rad/s] Δ scaled by |ω| / fade below it
 };
 
 class WheelIK {
@@ -72,18 +78,29 @@ private:
     double track_width_ = 0.4;
 };
 
-/// Traquad IK: skid-steer on tracked legs, one velocity per wheel.
+/// Traquad IK: skid-steer on tracked legs, one velocity per wheel, with the effective track
+/// width and drift measured with the Qualisys (study of 2026-10-22, three runs, standing).
 ///
-/// Each track hangs from a passive ankle at the end of a leg rotating about the HFE axis
-/// and lies flat on the ground. The shoulder angles move the tracks only along x, so
-/// without slip they do not change the wheel speeds. They change how much the tracks skid
-/// when turning: the farther apart front and hind tracks are, the less the robot turns.
-/// This is compensated with an effective half track width
+/// A. Kinematics. The tracks skid when turning, so the robot turns as a differential drive
+/// with an effective half track y_eff, which the yaw posture of the hips lowers (common
+/// offset δ of the four HFE joints, the same for R2, the compliant IK mode and the passive
+/// yield), and it creeps forward while turning:
 ///
-///   y_eff = (track_width/2)·(1 + γ·(X̄/(track_width/2))²),   X̄ = mean_i(shoulder_x + leg_length·cos α_i)
-///   ω_i   = (κ_i·vx − y_eff·ωz) / r
+///   y_eff = max(y0 − kδ·|δ|, track_width/2),   δ = mean_i q_HFE,i (measured)
+///   vx'   = vx − d·|ωz|
+///   V_L   = vx' − y_eff·ωz,   V_R = vx' + y_eff·ωz,   ω_i = κ_i·V_side / r
 ///
-/// with α = σ·q_HFE and κ = wheel side. With γ = 0 this equals DifferentialIK.
+/// with κ = wheel side (+1 left, −1 right). forward() inverts it from the measured speeds.
+/// With y0 = kδ = d = 0 this equals DifferentialIK.
+///
+/// B. Track deficit (optional). The track drives have a velocity loop with Kd only: each
+/// track runs slower than commanded by Δ, larger when the tracks skid. Each command is raised
+/// along its direction by
+///
+///   Δ = base + speed·|ω| + load·(turn ± side),   load = 1 − |ΣV| / (|ΣV| + |V_R − V_L|)
+///
+/// (+ for the outer track of the turn, − for the inner one; load 0 straight, 1 turning in
+/// place), faded to 0 below |ω| = fade. forward() does not include it (measured speeds).
 class TraquadIK: public WheelIK {
 public:
     void
@@ -91,21 +108,19 @@ public:
 
     std::vector<double> inverse(double vx, double vy, double omega) const override;
     std::array<double, 3> forward(const std::vector<double>& wheel_velocities) const override;
-    size_t num_wheels() const override { return sides_.size(); }
+    size_t num_wheels() const override { return config_.wheel_sides.size(); }
 
     void set_leg_state(const std::vector<double>& q) override;
 
-    /// Effective half track width for the current shoulder angles [m]
+    /// Effective half track width for the current yaw posture [m]
     double effective_half_track() const { return y_eff_; }
 
 private:
-    double wheel_rad_ = 0.05;
+    double deficit(double omega, double load, bool outer) const;
+
+    WheelIKConfig config_;
     double half_track_ = 0.2;
-    std::vector<int> sides_;
-    std::vector<int> shoulder_signs_;
-    double shoulder_x_ = 0.235;
-    double leg_length_ = 0.19;
-    double yaw_slip_gain_ = 0.0;
+    double y0_ = 0.2;
     double y_eff_ = 0.2;
 };
 

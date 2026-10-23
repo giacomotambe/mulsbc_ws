@@ -40,7 +40,7 @@ LEGS = ['LF', 'LH', 'RF', 'RH']
 SIDE = {'LF': 1, 'LH': 1, 'RF': -1, 'RH': -1}               # +1 left
 SIGMA = {'LF': 1.0, 'LH': -1.0, 'RF': -1.0, 'RH': 1.0}      # alpha = sigma * q_HFE
 WHEEL_SIGN = {'LF': 1.0, 'LH': 1.0, 'RF': -1.0, 'RH': -1.0}  # joint speed sign for forward belt motion
-R_S, SHOULDER_X, LEG_L = 0.028, 0.235, 0.19
+R_S, SHOULDER_X, LEG_L = 0.045, 0.235, 0.19   # R_S: wheel_rad of traquad8_dji.yaml (Qualisys 2026-10-22)
 SKIP = 1.5      # [s] transient left out at the start of a segment
 FS = 100.0      # [Hz] time series
 SEGMENT_TOPIC = '/omni_mulinex_joystick/identification/segment'   # markers of the NUC joystick

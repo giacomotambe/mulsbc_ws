@@ -159,11 +159,25 @@ omni_controller:
     # Wheel IK
     wheel_mode: ik # Wheel control mode: "ik" (twist → WheelIK) or "direct" (per-wheel velocity)
     feet_type: traquad # Wheel IK type: "mecanum", "differential", "traquad" (differential + shoulder joints), or "none"
-    wheel_rad: 0.028 # Wheel radius [m]
-    traquad: # feet_type: traquad only
-      shoulder_x: 0.235 # |x| of the HFE axes from the base center [m]
-      leg_length: 0.19 # HFE → ankle [m]
-      yaw_slip_gain: 0.49 # γ: effective track width growth with the track spread (0 = differential). Identified at q_stand 1.6 with scripts/identify_yaw_slip.py (robot turned ~62% of command with 0)
+    twist_max_x: 1.0 # [m/s] twist clamp (default 0.5): 22 rad/s at the tracks with wheel_rad 0.045, below their max_velocity 25 (traquad8_dji.xacro)
+    wheel_rad: 0.045 # Track joint radius [m]: belt speed per rad/s of the track joint. Qualisys 2026-10-22: base speed / (joint speed x 0.028) = 1.61-1.63 on 7 straight runs, so 0.028 x 1.62 = 0.045
+    traquad: # feet_type: traquad only. Fitted with the Qualisys on three runs of 2026-10-22 (standing, joystick,
+      # R2 and compliant IK mode), leave-one-run-out: yaw rate error 3.9 % (median, was 7.3 % with γ·X̄), vx 1.7 cm/s
+      # A. kinematics: y_eff = max(yaw_half_track − yaw_posture_gain·|δ|, track_width/2), δ = mean q_HFE (measured);
+      #    vx' = vx − spin_forward_drift·|ωz|;  V_L,R = vx' ∓ y_eff·ωz;  ω_i = κ_i·V / wheel_rad
+      yaw_half_track: 0.556 # y0 [m]: effective half track standing (real 0.537 turning in place at |δ| < 0.05)
+      yaw_posture_gain: 0.302 # kδ [m/rad]: yaw posture lowers y_eff (real 0.454 at |δ| 0.25-0.45, R2 / IK mode)
+      spin_forward_drift: 0.066 # d [m/rad]: the robot creeps forward by d·|ωz| while turning, either way
+      # B. track deficit: the drives (Kd only) run Δ slower than commanded; each command is raised by
+      #    Δ = base + speed·|ω| + load·(turn ± side) [rad/s], + outer / − inner track, load 0 straight .. 1 turning
+      #    in place (measured: straight 1.2-1.5, arc inner 1.0, arc outer 1.7-1.9, spin 2.0-2.3; CV rms 0.39)
+      deficit_compensation:
+        enabled: false # true: the robot follows the commanded twist (91 % vx, 74-88 % ωz without)
+        base: 1.215 # [rad/s]
+        speed: 0.025 # [rad/s per rad/s]
+        turn: -0.221 # [rad/s]
+        side: 0.939 # [rad/s]
+        fade: 1.0 # [rad/s] Δ faded to 0 below this track speed
     driveshaft_x: 0.235 # Longitudinal distance from base center to wheel [m]
     driveshaft_y: 0.188 # Lateral distance from base center to wheel [m]
     mecanum_angle: 135.0 # Mecanum roller angle [deg] (only used with feet_type: mecanum)

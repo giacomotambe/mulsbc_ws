@@ -42,9 +42,15 @@ CallbackReturn OmniController::on_init()
         auto_declare<double>("driveshaft_y", 0.188);
         auto_declare<double>("mecanum_angle", 135.0);
         auto_declare<double>("track_width", 0.4);
-        auto_declare<double>("traquad.shoulder_x", 0.235);
-        auto_declare<double>("traquad.leg_length", 0.19);
-        auto_declare<double>("traquad.yaw_slip_gain", 0.0);
+        auto_declare<double>("traquad.yaw_half_track", 0.0);
+        auto_declare<double>("traquad.yaw_posture_gain", 0.0);
+        auto_declare<double>("traquad.spin_forward_drift", 0.0);
+        auto_declare<bool>("traquad.deficit_compensation.enabled", false);
+        auto_declare<double>("traquad.deficit_compensation.base", 0.0);
+        auto_declare<double>("traquad.deficit_compensation.speed", 0.0);
+        auto_declare<double>("traquad.deficit_compensation.turn", 0.0);
+        auto_declare<double>("traquad.deficit_compensation.side", 0.0);
+        auto_declare<double>("traquad.deficit_compensation.fade", 1.0);
 
         // Communication
         auto_declare<int>("input_frequency", 100);
@@ -206,8 +212,8 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
             ik_config.mecanum_angle = get_node()->get_parameter("mecanum_angle").as_double();
             ik_config.track_width = get_node()->get_parameter("track_width").as_double();
 
-            // Traquad: pair each wheel with the HFE joint of the same leg (LF_WHEEL → LF_HFE);
-            // σ = side · (+1 front, −1 hind) from the leg prefix (LF, LH, RF, RH)
+            // Traquad: pair each wheel with the HFE joint of the same leg (LF_WHEEL → LF_HFE),
+            // whose measured angles give the yaw posture of the IK
             wheel_hfe_.clear();
             if (feet_type == "traquad") {
                 for (size_t i = 0; i < wheel_groups_.size(); i++) {
@@ -230,17 +236,27 @@ CallbackReturn OmniController::on_configure(const rclcpp_lifecycle::State&)
                         return CallbackReturn::ERROR;
                     }
                     wheel_hfe_.push_back(hfe);
-                    ik_config.shoulder_signs.push_back(wheel_sides[i] * (fh == 'F' ? 1 : -1));
                 }
+                auto param = [this](const std::string& name) {
+                    return get_node()->get_parameter("traquad." + name).as_double();
+                };
                 ik_config.wheel_sides = wheel_sides;
-                ik_config.shoulder_x = get_node()->get_parameter("traquad.shoulder_x").as_double();
-                ik_config.leg_length = get_node()->get_parameter("traquad.leg_length").as_double();
-                ik_config.yaw_slip_gain =
-                    get_node()->get_parameter("traquad.yaw_slip_gain").as_double();
+                ik_config.yaw_half_track = param("yaw_half_track");
+                ik_config.yaw_posture_gain = param("yaw_posture_gain");
+                ik_config.spin_forward_drift = param("spin_forward_drift");
+                ik_config.deficit_compensation =
+                    get_node()->get_parameter("traquad.deficit_compensation.enabled").as_bool();
+                ik_config.deficit_base = param("deficit_compensation.base");
+                ik_config.deficit_speed = param("deficit_compensation.speed");
+                ik_config.deficit_turn = param("deficit_compensation.turn");
+                ik_config.deficit_side = param("deficit_compensation.side");
+                ik_config.deficit_fade = param("deficit_compensation.fade");
                 RCLCPP_INFO(
                     get_node()->get_logger(),
-                    "Traquad IK: shoulder_x=%.3f m, leg_length=%.3f m, yaw_slip_gain=%.3f",
-                    ik_config.shoulder_x, ik_config.leg_length, ik_config.yaw_slip_gain
+                    "Traquad IK: yaw_half_track=%.3f m, yaw_posture_gain=%.3f m/rad, "
+                    "spin_forward_drift=%.3f m/rad, deficit compensation %s",
+                    ik_config.yaw_half_track, ik_config.yaw_posture_gain,
+                    ik_config.spin_forward_drift, ik_config.deficit_compensation ? "ON" : "OFF"
                 );
             }
 

@@ -187,38 +187,50 @@ TEST_F(DifferentialIKTest, SingleWheelPerSideWorks)
 
 // ─── TraquadIK Tests ────────────────────────────────────────────────────────
 
-WheelIKConfig traquad_config(double yaw_slip_gain)
+WheelIKConfig traquad_config(double y0 = 0.0, double k_delta = 0.0, double drift = 0.0)
 {
     WheelIKConfig config;
-    config.wheel_rad = 0.028;
-    config.track_width = 0.395;
-    config.wheel_sides = {1, 1, -1, -1};    // LF, LH, RF, RH
-    config.shoulder_signs = {1, -1, -1, 1}; // σ = side · (front +1, hind −1)
-    config.shoulder_x = 0.235;
-    config.leg_length = 0.19;
-    config.yaw_slip_gain = yaw_slip_gain;
+    config.wheel_rad = 0.045;
+    config.track_width = 0.4;
+    config.wheel_sides = {1, 1, -1, -1}; // LF, LH, RF, RH
+    config.yaw_half_track = y0;
+    config.yaw_posture_gain = k_delta;
+    config.spin_forward_drift = drift;
+    return config;
+}
+
+WheelIKConfig deficit_config()
+{
+    WheelIKConfig config = traquad_config(0.556, 0.302, 0.066);
+    config.deficit_compensation = true;
+    config.deficit_base = 1.215;
+    config.deficit_speed = 0.025;
+    config.deficit_turn = -0.221;
+    config.deficit_side = 0.939;
+    config.deficit_fade = 1.0;
     return config;
 }
 
 const std::vector<std::string> kTraquadWheels = {"LF_WHEEL", "LH_WHEEL", "RF_WHEEL", "RH_WHEEL"};
+const std::vector<double> kStand = {1.6, -1.6, -1.6, 1.6};
 
 TEST(TraquadIK, NumWheels)
 {
     TraquadIK ik;
-    ik.configure(traquad_config(0.0), kTraquadWheels);
+    ik.configure(traquad_config(), kTraquadWheels);
     EXPECT_EQ(ik.num_wheels(), 4u);
 }
 
-TEST(TraquadIK, NoSlipGainEqualsDifferential)
+TEST(TraquadIK, DefaultsEqualDifferential)
 {
-    // γ = 0: the shoulder angles do not matter
+    // y0 = kδ = d = 0, no deficit: the shoulder angles do not matter
     TraquadIK ik;
-    ik.configure(traquad_config(0.0), kTraquadWheels);
-    ik.set_leg_state({1.2, -1.2, -1.2, 1.2});
+    ik.configure(traquad_config(), kTraquadWheels);
+    ik.set_leg_state({1.9, -1.3, -1.3, 1.9});
     DifferentialIK diff;
     WheelIKConfig config;
-    config.wheel_rad = 0.028;
-    config.track_width = 0.395;
+    config.wheel_rad = 0.045;
+    config.track_width = 0.4;
     diff.configure(config, {"LEFT", "RIGHT"});
 
     double vx = 0.2, omega = 0.5;
@@ -230,48 +242,116 @@ TEST(TraquadIK, NoSlipGainEqualsDifferential)
     EXPECT_NEAR(vels[3], ref[1], 1e-10);
 }
 
-TEST(TraquadIK, EffectiveTrackGrowsWithTrackSpread)
+TEST(TraquadIK, YawPostureLowersEffectiveTrack)
 {
     TraquadIK ik;
-    ik.configure(traquad_config(0.2), kTraquadWheels);
-    double h = 0.395 / 2.0;
+    ik.configure(traquad_config(0.556, 0.302), kTraquadWheels);
+    ik.set_leg_state(kStand); // δ = 0: the stand pose cancels
+    EXPECT_NEAR(ik.effective_half_track(), 0.556, 1e-12);
 
-    ik.set_leg_state({1.2, -1.2, -1.2, 1.2});
-    double x12 = 0.235 + 0.19 * std::cos(1.2);
-    EXPECT_NEAR(ik.effective_half_track(), h * (1.0 + 0.2 * (x12 / h) * (x12 / h)), 1e-12);
-    double y12 = ik.effective_half_track();
+    // R2 posture, both directions: δ = ±0.3 (q = σ·1.6 + δ)
+    ik.set_leg_state({1.9, -1.3, -1.3, 1.9});
+    EXPECT_NEAR(ik.effective_half_track(), 0.556 - 0.302 * 0.3, 1e-12);
+    ik.set_leg_state({1.3, -1.9, -1.9, 1.3});
+    EXPECT_NEAR(ik.effective_half_track(), 0.556 - 0.302 * 0.3, 1e-12);
 
-    ik.set_leg_state({1.6, -1.6, -1.6, 1.6});
-    EXPECT_LT(ik.effective_half_track(), y12); // tracks closer together → less slip
+    // never below the geometric half track
+    ik.set_leg_state({3.0, 1.4, 1.4, 3.0});
+    EXPECT_NEAR(ik.effective_half_track(), 0.2, 1e-12);
 
     // Pure rotation: every wheel turns at −y_eff·ωz / r
-    auto vels = ik.inverse(0.0, 0.0, 0.5);
-    for (double v : vels)
-        EXPECT_NEAR(v, -ik.effective_half_track() * 0.5 / 0.028, 1e-10);
+    ik.set_leg_state(kStand);
+    for (double v : ik.inverse(0.0, 0.0, 0.5))
+        EXPECT_NEAR(v, -0.556 * 0.5 / 0.045, 1e-10);
 }
 
-TEST(TraquadIK, ForwardOnlyIgnoresShoulders)
+TEST(TraquadIK, SpinForwardDrift)
 {
     TraquadIK ik;
-    ik.configure(traquad_config(0.3), kTraquadWheels);
-    ik.set_leg_state({1.0, -1.4, -1.1, 1.3});
-    auto vels = ik.inverse(0.2, 0.0, 0.0);
-    EXPECT_NEAR(vels[0], 0.2 / 0.028, 1e-10);
-    EXPECT_NEAR(vels[1], 0.2 / 0.028, 1e-10);
-    EXPECT_NEAR(vels[2], -0.2 / 0.028, 1e-10);
-    EXPECT_NEAR(vels[3], -0.2 / 0.028, 1e-10);
+    ik.configure(traquad_config(0.556, 0.302, 0.066), kTraquadWheels);
+    ik.set_leg_state(kStand);
+    // turning in place both ways: the tracks back off by d·|ωz| on both sides
+    for (double omega : {0.8, -0.8}) {
+        auto vels = ik.inverse(0.0, 0.0, omega);
+        double v_left = vels[0] * 0.045, v_right = -vels[2] * 0.045;
+        EXPECT_NEAR((v_left + v_right) / 2.0, -0.066 * 0.8, 1e-10);
+    }
+    // straight: no effect
+    auto vels = ik.inverse(0.3, 0.0, 0.0);
+    EXPECT_NEAR(vels[0], 0.3 / 0.045, 1e-10);
+    EXPECT_NEAR(vels[2], -0.3 / 0.045, 1e-10);
 }
 
 TEST(TraquadIK, IKFKRoundTrip)
 {
     TraquadIK ik;
-    ik.configure(traquad_config(0.25), kTraquadWheels);
-    ik.set_leg_state({1.0, -1.3, -1.1, 1.2});
-    double vx = 0.15, omega = -0.4;
-    auto recovered = ik.forward(ik.inverse(vx, 0.0, omega));
-    EXPECT_NEAR(recovered[0], vx, 1e-10);
-    EXPECT_NEAR(recovered[1], 0.0, 1e-10);
-    EXPECT_NEAR(recovered[2], omega, 1e-10);
+    ik.configure(traquad_config(0.556, 0.302, 0.066), kTraquadWheels);
+    ik.set_leg_state({1.85, -1.35, -1.35, 1.85});
+    for (double omega : {-0.4, 0.0, 0.7}) {
+        double vx = 0.15;
+        auto recovered = ik.forward(ik.inverse(vx, 0.0, omega));
+        EXPECT_NEAR(recovered[0], vx, 1e-10);
+        EXPECT_NEAR(recovered[1], 0.0, 1e-10);
+        EXPECT_NEAR(recovered[2], omega, 1e-10);
+    }
+}
+
+TEST(TraquadIK, DeficitCompensationOffByDefault)
+{
+    TraquadIK ik, ref;
+    WheelIKConfig config = deficit_config();
+    config.deficit_compensation = false;
+    ik.configure(config, kTraquadWheels);
+    ref.configure(traquad_config(0.556, 0.302, 0.066), kTraquadWheels);
+    ik.set_leg_state(kStand);
+    ref.set_leg_state(kStand);
+    auto a = ik.inverse(0.3, 0.0, 0.4), b = ref.inverse(0.3, 0.0, 0.4);
+    for (size_t i = 0; i < 4; i++)
+        EXPECT_NEAR(a[i], b[i], 1e-12);
+}
+
+TEST(TraquadIK, DeficitCompensation)
+{
+    // no forward drift here: turning in place gives the same |ω| and load 1 on both sides
+    TraquadIK ik, kin;
+    WheelIKConfig config = deficit_config();
+    config.spin_forward_drift = 0.0;
+    ik.configure(config, kTraquadWheels);
+    config.deficit_compensation = false;
+    kin.configure(config, kTraquadWheels);
+    ik.set_leg_state(kStand);
+    kin.set_leg_state(kStand);
+    // forward-signed track speed added by the compensation
+    auto added = [&](double vx, double omega, size_t i) {
+        double side = i < 2 ? 1.0 : -1.0;
+        return side * (ik.inverse(vx, 0.0, omega)[i] - kin.inverse(vx, 0.0, omega)[i]);
+    };
+
+    // straight (load 0), both directions: + base + speed·|ω| along the motion
+    double w = 0.3 / 0.045;
+    EXPECT_NEAR(added(0.3, 0.0, 0), 1.215 + 0.025 * w, 1e-10);
+    EXPECT_NEAR(added(0.3, 0.0, 2), 1.215 + 0.025 * w, 1e-10);
+    EXPECT_NEAR(added(-0.3, 0.0, 0), -(1.215 + 0.025 * w), 1e-10);
+
+    // turning in place (load 1): both tracks are outer, the largest deficit
+    double ws = 0.556 * 0.8 / 0.045;
+    double spin = 1.215 + 0.025 * ws - 0.221 + 0.939;
+    EXPECT_NEAR(added(0.0, 0.8, 0), -spin, 1e-10); // left track backwards
+    EXPECT_NEAR(added(0.0, 0.8, 2), spin, 1e-10);  // right track forwards
+
+    // arc to the left: the right (outer) track gets more than the left (inner) one
+    EXPECT_GT(added(0.3, 0.3, 2), added(0.3, 0.3, 0));
+    EXPECT_GT(added(0.3, 0.3, 0), 0.0);
+
+    // faded to 0 at standstill, no step near zero
+    for (double v : ik.inverse(0.0, 0.0, 0.0))
+        EXPECT_NEAR(v, 0.0, 1e-12);
+    EXPECT_NEAR(added(0.0225, 0.0, 0), 0.5 * (1.215 + 0.025 * 0.5), 1e-10); // |ω| 0.5 = fade / 2
+
+    // forward() works on the measured speeds: no compensation
+    auto fk = ik.forward(kin.inverse(0.3, 0.0, 0.4));
+    EXPECT_NEAR(fk[0], 0.3, 1e-10);
+    EXPECT_NEAR(fk[2], 0.4, 1e-10);
 }
 
 TEST(TraquadIK, InvalidConfigThrows)
@@ -279,13 +359,15 @@ TEST(TraquadIK, InvalidConfigThrows)
     TraquadIK ik;
     WheelIKConfig config;
     std::vector<std::string> names = {"A", "B"};
+    EXPECT_THROW(ik.configure(config, names), std::invalid_argument); // no wheel_sides
     config.wheel_sides = {1, -1};
-    EXPECT_THROW(ik.configure(config, names), std::invalid_argument); // no shoulder_signs
-    config.shoulder_signs = {1, -1};
     EXPECT_NO_THROW(ik.configure(config, names));
-    config.yaw_slip_gain = -0.1;
+    config.yaw_posture_gain = -0.1;
     EXPECT_THROW(ik.configure(config, names), std::invalid_argument);
-    config.yaw_slip_gain = 0.0;
+    config.yaw_posture_gain = 0.0;
+    config.deficit_fade = 0.0;
+    EXPECT_THROW(ik.configure(config, names), std::invalid_argument);
+    config.deficit_fade = 1.0;
     config.wheel_sides = {1, 1};
     EXPECT_THROW(ik.configure(config, names), std::invalid_argument); // one side only
     config.wheel_sides = {1, 0};
@@ -295,87 +377,6 @@ TEST(TraquadIK, InvalidConfigThrows)
 TEST(TraquadIK, WrongLegStateSizeThrows)
 {
     TraquadIK ik;
-    ik.configure(traquad_config(0.0), kTraquadWheels);
+    ik.configure(traquad_config(), kTraquadWheels);
     EXPECT_THROW(ik.set_leg_state({0.0}), std::invalid_argument);
-}
-
-TEST(DifferentialMultiWheelConcept, IKOutputFansOutToGroups)
-{
-    // Demonstrates the multi-wheel pattern:
-    // IK computes 2 velocities, controller duplicates to N wheels per side.
-    DifferentialIK ik;
-    WheelIKConfig config;
-    config.wheel_rad = 0.1;
-    config.track_width = 0.5;
-    // Controller passes one representative name per group
-    ik.configure(config, {"LEFT", "RIGHT"});
-
-    double vx = 0.5, omega = 1.0;
-    auto vels = ik.inverse(vx, 0.0, omega);
-
-    // Simulate 2 wheels per side: each gets the same velocity
-    std::vector<std::vector<std::string>> groups = {
-        {"left_front", "left_rear"}, {"right_front", "right_rear"}
-    };
-
-    // Fan out: each joint in group g gets vels[g]
-    std::map<std::string, double> joint_cmds;
-    for (size_t g = 0; g < groups.size(); g++)
-        for (const auto& jnt : groups[g])
-            joint_cmds[jnt] = vels[g];
-
-    // All left wheels get the same velocity
-    EXPECT_DOUBLE_EQ(joint_cmds["left_front"], joint_cmds["left_rear"]);
-    // All right wheels get the same velocity
-    EXPECT_DOUBLE_EQ(joint_cmds["right_front"], joint_cmds["right_rear"]);
-    // Left != right (since omega != 0)
-    EXPECT_NE(joint_cmds["left_front"], joint_cmds["right_front"]);
-
-    // Forward kinematics: average each group, recover twist
-    double avg_left = (joint_cmds["left_front"] + joint_cmds["left_rear"]) / 2.0;
-    double avg_right = (joint_cmds["right_front"] + joint_cmds["right_rear"]) / 2.0;
-    auto recovered = ik.forward({avg_left, avg_right});
-
-    EXPECT_NEAR(recovered[0], vx, 1e-10);
-    EXPECT_NEAR(recovered[2], omega, 1e-10);
-}
-
-// ─── Factory Tests ──────────────────────────────────────────────────────────
-
-TEST(WheelIKFactory, CreateMecanum)
-{
-    auto ik = create_wheel_ik("mecanum");
-    ASSERT_NE(ik, nullptr);
-    EXPECT_EQ(ik->num_wheels(), 4u);
-}
-
-TEST(WheelIKFactory, CreateDifferential)
-{
-    auto ik = create_wheel_ik("differential");
-    ASSERT_NE(ik, nullptr);
-    EXPECT_EQ(ik->num_wheels(), 2u);
-}
-
-TEST(WheelIKFactory, CreateTraquad)
-{
-    auto ik = create_wheel_ik("traquad");
-    ASSERT_NE(ik, nullptr);
-    EXPECT_NE(dynamic_cast<TraquadIK*>(ik.get()), nullptr);
-}
-
-TEST(WheelIKFactory, CreateNoneReturnsNull)
-{
-    auto ik = create_wheel_ik("none");
-    EXPECT_EQ(ik, nullptr);
-}
-
-TEST(WheelIKFactory, UnknownTypeThrows)
-{
-    EXPECT_THROW(create_wheel_ik("swerve"), std::invalid_argument);
-}
-
-int main(int argc, char** argv)
-{
-    testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }

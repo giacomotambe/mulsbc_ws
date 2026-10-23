@@ -1,5 +1,6 @@
 #include "omni_controller/wheel_ik.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -121,55 +122,74 @@ std::array<double, 3> DifferentialIK::forward(const std::vector<double>& wheel_v
 void TraquadIK::configure(const WheelIKConfig& config, const std::vector<std::string>& wheel_names)
 {
     size_t n = wheel_names.size();
-    if (config.wheel_sides.size() != n || config.shoulder_signs.size() != n) {
+    if (config.wheel_sides.size() != n) {
         throw std::invalid_argument(
-            "TraquadIK: wheel_sides and shoulder_signs must have one entry per wheel (" +
-            std::to_string(n) + ")"
+            "TraquadIK: wheel_sides must have one entry per wheel (" + std::to_string(n) + ")"
         );
     }
     bool has_left = false, has_right = false;
-    for (size_t i = 0; i < n; i++) {
-        int side = config.wheel_sides[i];
-        int sigma = config.shoulder_signs[i];
-        if ((side != 1 && side != -1) || (sigma != 1 && sigma != -1))
-            throw std::invalid_argument("TraquadIK: wheel_sides and shoulder_signs must be +1 or -1");
+    for (int side : config.wheel_sides) {
+        if (side != 1 && side != -1)
+            throw std::invalid_argument("TraquadIK: wheel_sides must be +1 or -1");
         has_left |= side == 1;
         has_right |= side == -1;
     }
     if (!has_left || !has_right)
         throw std::invalid_argument("TraquadIK needs at least one wheel per side");
-    if (config.yaw_slip_gain < 0.0)
-        throw std::invalid_argument("TraquadIK: yaw_slip_gain must be >= 0");
+    if (config.yaw_half_track < 0.0 || config.yaw_posture_gain < 0.0)
+        throw std::invalid_argument("TraquadIK: yaw_half_track and yaw_posture_gain must be >= 0");
+    if (config.deficit_fade <= 0.0)
+        throw std::invalid_argument("TraquadIK: deficit_fade must be > 0");
 
-    wheel_rad_ = config.wheel_rad;
+    config_ = config;
     half_track_ = config.track_width / 2.0;
-    sides_ = config.wheel_sides;
-    shoulder_signs_ = config.shoulder_signs;
-    shoulder_x_ = config.shoulder_x;
-    leg_length_ = config.leg_length;
-    yaw_slip_gain_ = config.yaw_slip_gain;
+    y0_ = config.yaw_half_track > 0.0 ? config.yaw_half_track : half_track_;
     set_leg_state(std::vector<double>(n, 0.0));
 }
 
 void TraquadIK::set_leg_state(const std::vector<double>& q)
 {
-    if (q.size() != sides_.size())
+    if (q.size() != config_.wheel_sides.size())
         throw std::invalid_argument("TraquadIK: leg state size must match wheel count");
-    // Mean longitudinal distance of the tracks from the base center
-    double x_mean = 0.0;
-    for (size_t i = 0; i < q.size(); i++)
-        x_mean += shoulder_x_ + leg_length_ * std::cos(shoulder_signs_[i] * q[i]);
-    x_mean /= static_cast<double>(q.size());
-    double ratio = x_mean / half_track_;
-    y_eff_ = half_track_ * (1.0 + yaw_slip_gain_ * ratio * ratio);
+    // Yaw posture: common offset of the HFE joints (the stand pose cancels, σ sums to 0)
+    double delta = 0.0;
+    for (double qi : q)
+        delta += qi;
+    delta /= static_cast<double>(q.size());
+    // never below the geometric half track (no skid at all)
+    y_eff_ = std::max(y0_ - config_.yaw_posture_gain * std::abs(delta), half_track_);
+}
+
+double TraquadIK::deficit(double omega, double load, bool outer) const
+{
+    double d = config_.deficit_base + config_.deficit_speed * std::abs(omega) +
+               load * (config_.deficit_turn + (outer ? 1.0 : -1.0) * config_.deficit_side);
+    // fade near zero: no step of the command when a track reverses
+    return std::max(d, 0.0) * std::min(std::abs(omega) / config_.deficit_fade, 1.0);
 }
 
 std::vector<double> TraquadIK::inverse(double vx, double /*vy*/, double omega) const
 {
+    // Belt speeds of the two sides (forward positive), forward drift while turning removed
+    double v = vx - config_.spin_forward_drift * std::abs(omega);
+    double v_left = v - y_eff_ * omega;
+    double v_right = v + y_eff_ * omega;
+    double sum = std::abs(v_left + v_right), diff = std::abs(v_right - v_left);
+    double load = sum + diff > 1e-9 ? 1.0 - sum / (sum + diff) : 0.0;
+
     // Right wheels spin the other way for forward motion (side = −1)
-    std::vector<double> wheel_vels(sides_.size());
-    for (size_t i = 0; i < sides_.size(); i++)
-        wheel_vels[i] = (sides_[i] * vx - omega * y_eff_) / wheel_rad_;
+    const auto& sides = config_.wheel_sides;
+    std::vector<double> wheel_vels(sides.size());
+    for (size_t i = 0; i < sides.size(); i++) {
+        double own = sides[i] > 0 ? v_left : v_right;
+        double other = sides[i] > 0 ? v_right : v_left;
+        double w = own / config_.wheel_rad;
+        if (config_.deficit_compensation) {
+            bool outer = (own - other) * own > 0.0;
+            w += std::copysign(deficit(w, load, outer), w);
+        }
+        wheel_vels[i] = sides[i] * w;
+    }
     return wheel_vels;
 }
 
@@ -178,9 +198,10 @@ std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_veloci
     // Ground speed of each track, averaged per side
     double v_left = 0.0, v_right = 0.0;
     int n_left = 0, n_right = 0;
-    for (size_t i = 0; i < sides_.size(); i++) {
-        double v = sides_[i] * wheel_velocities[i] * wheel_rad_;
-        if (sides_[i] > 0) {
+    const auto& sides = config_.wheel_sides;
+    for (size_t i = 0; i < sides.size(); i++) {
+        double v = sides[i] * wheel_velocities[i] * config_.wheel_rad;
+        if (sides[i] > 0) {
             v_left += v;
             n_left++;
         } else {
@@ -190,8 +211,8 @@ std::array<double, 3> TraquadIK::forward(const std::vector<double>& wheel_veloci
     }
     v_left /= n_left;
     v_right /= n_right;
-    double vx = (v_left + v_right) / 2.0;
     double omega = (v_right - v_left) / (2.0 * y_eff_);
+    double vx = (v_left + v_right) / 2.0 + config_.spin_forward_drift * std::abs(omega);
     return {vx, 0.0, omega};
 }
 

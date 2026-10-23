@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <robot name="omnicar"  xmlns:xacro="http://ros.org/wiki/xacro">
 
-    <xacro:macro name="joint" params="name id bus kp kd second_encoder_source max_pos_limit min_pos_limit actuator_trasmission max_current_A">
+    <xacro:macro name="joint" params="name id bus kp kd second_encoder_source max_pos_limit min_pos_limit actuator_trasmission max_current_A max_velocity">
         <joint name="${name}">
             <param name="id">${id}</param>
             <param name="bus">${bus}</param>
@@ -18,7 +18,7 @@
             <param name="enable_motor_temperature">0</param>
             <param name="max_pos_limit">${max_pos_limit}</param>
             <param name="min_pos_limit">${min_pos_limit}</param>
-            <param name="max_velocity">10.0</param>
+            <param name="max_velocity">${max_velocity}</param>
             <param name="max_effort">15.0</param>
             <param name="actuator_trasmission">${actuator_trasmission}</param>
             <param name="position_offset">0</param>
@@ -46,11 +46,13 @@
     </xacro:macro>
 
      <xacro:macro name="leg_joint" params="name id bus">
-     <xacro:joint name="${name}" id="${id}" bus="${bus}" kp="60.0" kd="0.6" second_encoder_source="-1" max_pos_limit="3.14" min_pos_limit="-3.14" actuator_trasmission="9" max_current_A="80.0"/>
+     <xacro:joint name="${name}" id="${id}" bus="${bus}" kp="60.0" kd="0.6" second_encoder_source="-1" max_pos_limit="3.14" min_pos_limit="-3.14" actuator_trasmission="9" max_current_A="80.0" max_velocity="10.0"/>
     </xacro:macro>
 
+    <!-- Track joints: max_velocity 25 rad/s (1.1 m/s with wheel_rad 0.045; was 10 as the legs, about 0.45 m/s).
+         The moteus derate the torque above it, so the tracks can still go about 1.5 rad/s past it -->
     <xacro:macro name="wheel_joint" params="name id bus">
-        <xacro:joint name="${name}" id="${id}" bus="${bus}" kp="0.0" kd="0.9" second_encoder_source="-1" max_pos_limit="5000.0" min_pos_limit="-5000.0" actuator_trasmission="15" max_current_A="40.0"/>
+        <xacro:joint name="${name}" id="${id}" bus="${bus}" kp="0.0" kd="0.9" second_encoder_source="-1" max_pos_limit="5000.0" min_pos_limit="-5000.0" actuator_trasmission="15" max_current_A="40.0" max_velocity="25.0"/>
     </xacro:macro>
 
     <xacro:macro name="distributor_joint" params="name id">
